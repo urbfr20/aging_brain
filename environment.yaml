@@ -1,0 +1,26 @@
+name: aging_brain
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - r-base=4.0
+  - r-essentials
+  - mamba
+  - r-tarifx
+  - bioconductor-deseq2=1.30.0
+  - r-rmisc=1.5
+  - r-ggpubr=0.4.0
+  - r-compare=0.2_6
+  - r-emmeans=1.5.2-1
+  - r-v8
+  - r-rstan=2.21.1
+  - r-rstanarm=2.21.1
+  - r-brms=2.14.4
+  - r-gdata=2.18.0
+  - r-ashr
+  - r-reshape=0.8.8
+  - r-ggpmisc
+  - icu>=58.2
+
+#install.packages("cocor")

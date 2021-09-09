@@ -1,0 +1,1774 @@
+---
+title: "Ageing Brain Project"
+#author: "Antonino Malacrinò"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_notebook
+code_download: true
+---
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+library("plyr")
+library("taRifx")
+library("DESeq2")
+library("ggplot2")
+library("Rmisc")
+library("reshape")
+library("broom")
+library("dplyr")
+library("tidyr")
+library("data.table")
+library("ggpubr")
+library("tibble")
+library("compare")
+library("lme4")
+library("car")
+library("emmeans")
+library("rstanarm")
+library("shinystan")
+library("brms")
+library("cowplot")
+library("gdata")
+library("cocor")
+library("ggpmisc")
+library("bayesplot")
+library("readr")
+dir.create("Figures", showWarnings = FALSE) #this creates a folder for figures, if it does not exist
+dir.create("Tables", showWarnings = FALSE)
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+# Load data
+raw.data <- read.table("../data/Raw_data.txt", sep="\t", header = T, row.names = 1)
+raw.data<-raw.data[1:(nrow(raw.data)-7),]
+colnames(raw.data) <- sub("_S.*", "", colnames(raw.data))
+metadata <- read.table("../data/AB_Mapping_file.txt", sep="\t", header = T)
+
+metadata <- metadata[which(metadata$Population!="Dah_outbred"),]
+metadata <- metadata[which(metadata$Age!="A3"),]
+
+metadata.lhm <- metadata[which(metadata$Population=="Lhm"),]
+data.lhm <- raw.data[ ,(colnames(raw.data) %in% metadata.lhm$NGI_reference)]
+data.lhm <- data.lhm[,apply(data.lhm,2,sum)>=2e6] 
+metadata.lhm <- metadata.lhm[metadata.lhm$NGI_reference %in% (colnames(data.lhm)),] 
+
+metadata.dah <- metadata[which(metadata$Population=="Dahomey"),]
+data.dah <- raw.data[ ,(colnames(raw.data) %in% metadata.dah$NGI_reference)]
+data.dah <- data.dah[,apply(data.dah,2,sum)>=2e6] 
+metadata.dah <- metadata.dah[metadata.dah$NGI_reference %in% (colnames(data.dah)),]
+
+ts <- read.table("../data/TS_Male_Female.csv", header = T, sep = "\t")
+
+# DESeq model -- LHm
+cds <- DESeqDataSetFromMatrix(data.lhm, metadata.lhm, ~ Sex * Age)
+cds$group <- factor(paste0(cds$Sex, cds$Age))
+design(cds) <- ~ group
+dds.lhm <-DESeq(cds,betaPrior=FALSE)
+countdata <- estimateSizeFactors(cds)
+cdsBlind <- estimateDispersions(countdata)
+vstdata.lhm <- varianceStabilizingTransformation(cdsBlind)
+
+# DESeq model -- Dahomey
+cds <- DESeqDataSetFromMatrix(data.dah, metadata.dah, ~ Sex * Age)
+cds$group <- factor(paste0(cds$Sex, cds$Age))
+design(cds) <- ~ group
+dds.dah <-DESeq(cds,betaPrior=FALSE)
+countdata <- estimateSizeFactors(cds)
+cdsBlind <- estimateDispersions(countdata)
+vstdata.dah <- varianceStabilizingTransformation(cdsBlind)
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+#Create working datasets
+contrast.calculator <- function(dataset, term1, term2, population){
+  dataset$group <- relevel(dataset$group, ref = term2)
+  dataset <- nbinomWaldTest(dataset, betaPrior=TRUE)
+  set.seed(1)
+  res.de <- results(dataset, contrast=c("group", term1, term2))
+  res.de <- as.data.frame(res.de)
+  res.de <- setDT(res.de, keep.rownames = TRUE)[]
+  res.de <- res.de[,c("rn", "log2FoldChange", "padj")]
+
+  colnames(res.de) <- c("Gene", "log2FoldChange", "padj")
+  res.de$Population <- paste0(population)
+  return(res.de)
+}
+
+sb.calculator <- function(dataset, p.threshold, term1, term2, population){
+  results.merged <- contrast.calculator(dataset = dataset, term1 = term1, term2 = term2, population = population)
+  results.merged$bias <- NA
+  results.merged$log2FoldChange <- ifelse(abs(results.merged$log2FoldChange) > 3.5, NA, results.merged$log2FoldChange)
+  results.merged$bias <- ifelse(results.merged$log2FoldChange > 0 & results.merged$padj < p.threshold, "Female_biased",
+                                ifelse(results.merged$log2FoldChange < 0 & results.merged$padj < p.threshold , "Male_biased",
+                                       "Unbiased"))
+  colnames(results.merged)[1] <- "Gene"
+  results.merged$bias[is.na(results.merged$bias)] <- "Unbiased" #"Undefined" if we want to remove any gene associated with NA
+  
+  sb.genes <- results.merged[,c("Gene", "log2FoldChange", "bias", "Population")]
+  return(sb.genes)
+}
+```
+
+# Number of SB genes {.tabset}
+## Padj <.05
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+sb.genes.nr.fun <- function(p.threshold){
+  n_genes <- 17558
+  sb.genes.lhm.y <- sb.calculator(dataset = dds.lhm, p.threshold = p.threshold, term1 = "FemaleA1", term2 = "MaleA1", population = "LHm")
+  sb.genes.lhm.o <- sb.calculator(dataset = dds.lhm, p.threshold = p.threshold, term1 = "FemaleA2", term2 = "MaleA2", population = "LHm")
+  sb.genes.dah.y <- sb.calculator(dataset = dds.dah, p.threshold = p.threshold, term1 = "FemaleA1", term2 = "MaleA1", population = "Dahomey")
+  sb.genes.dah.o <- sb.calculator(dataset = dds.dah, p.threshold = p.threshold, term1 = "FemaleA2", term2 = "MaleA2", population = "Dahomey")
+  sb.genes.y <- rbind(sb.genes.lhm.y, sb.genes.dah.y)
+  sb.genes.y$Age <- "Young"
+  sb.genes.o <- rbind(sb.genes.lhm.o, sb.genes.dah.o)
+  sb.genes.o$Age <- "Old"
+  sb.genes <- rbind(sb.genes.y, sb.genes.o)
+  sb.genes <- dcast(setDT(sb.genes), Population + bias ~ Age, length)
+  sb.genes <- sb.genes %>%
+                      rowwise() %>% 
+                      mutate(
+                        chi.sq = chisq.test(matrix(c(Young, Old, (n_genes - Young), (n_genes - Old)), nrow=2))$statistic,
+                        p_val = chisq.test(matrix(c(Young, Old, (n_genes - Young), (n_genes - Old)), nrow=2))$p.value * 4 # Bonferroni, 4 tests
+                        )
+  sb.genes <- sb.genes[,c("Population", "bias", "Young", "Old", "chi.sq", "p_val")]
+return(sb.genes %>% filter(bias != "Unbiased"))
+}
+
+sb.genes.nr <- sb.genes.nr.fun(p.threshold = 0.05)
+write.table(sb.genes.nr, "Tables/sb_genes_0.05.csv", quote = FALSE, sep = ",", row.names = FALSE)
+sb.genes.nr
+```
+
+## Padj<.01
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+sb.genes.nr <- sb.genes.nr.fun(p.threshold = 0.01)
+write.table(sb.genes.nr, "Tables/sb_genes_0.01.csv", quote = FALSE, sep = ",", row.names = FALSE)
+sb.genes.nr
+```
+
+## Padj<.001
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+sb.genes.nr <- sb.genes.nr.fun(p.threshold = 0.001)
+write.table(sb.genes.nr, "Tables/sb_genes_0.001.csv", quote = FALSE, sep = ",", row.names = FALSE)
+sb.genes.nr
+```
+
+## Venn diagram
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+p.threshold <- 0.05
+
+sb.genes.lhm.y <- sb.calculator(dataset = dds.lhm, p.threshold = p.threshold, term1 = "FemaleA1", term2 = "MaleA1", population = "LHm")
+sb.genes.dah.y <- sb.calculator(dataset = dds.dah, p.threshold = p.threshold, term1 = "FemaleA1", term2 = "MaleA1", population = "Dahomey")
+sb.genes.lhm.o <- sb.calculator(dataset = dds.lhm, p.threshold = p.threshold, term1 = "FemaleA2", term2 = "MaleA2", population = "LHm")
+sb.genes.dah.o <- sb.calculator(dataset = dds.dah, p.threshold = p.threshold, term1 = "FemaleA2", term2 = "MaleA2", population = "Dahomey")
+
+sb.genes.lhm.y <- sb.genes.lhm.y[!is.na(sb.genes.lhm.y$log2FoldChange),]
+sb.genes.dah.y <- sb.genes.dah.y[!is.na(sb.genes.dah.y$log2FoldChange),]
+sb.genes.lhm.o <- sb.genes.lhm.o[!is.na(sb.genes.lhm.o$log2FoldChange),]
+sb.genes.dah.o <- sb.genes.dah.o[!is.na(sb.genes.dah.o$log2FoldChange),]
+
+male.biased.genes.dah.y <- (sb.genes.dah.y %>% filter(bias == "Male_biased"))$Gene
+female.biased.genes.dah.y <- (sb.genes.dah.y %>% filter(bias == "Female_biased"))$Gene
+unbiased.genes.dah.y <- (sb.genes.dah.y %>% filter(bias == "Unbiased"))$Gene
+
+male.biased.genes.lhm.y <- (sb.genes.lhm.y %>% filter(bias == "Male_biased"))$Gene
+female.biased.genes.lhm.y <- (sb.genes.lhm.y %>% filter(bias == "Female_biased"))$Gene
+unbiased.genes.lhm.y <- (sb.genes.lhm.y %>% filter(bias == "Unbiased"))$Gene
+
+male.biased.genes.dah.o <- (sb.genes.dah.o %>% filter(bias == "Male_biased"))$Gene
+female.biased.genes.dah.o <- (sb.genes.dah.o %>% filter(bias == "Female_biased"))$Gene
+unbiased.genes.dah.o <- (sb.genes.dah.o %>% filter(bias == "Unbiased"))$Gene
+
+male.biased.genes.lhm.o <- (sb.genes.lhm.o %>% filter(bias == "Male_biased"))$Gene
+female.biased.genes.lhm.o <- (sb.genes.lhm.o %>% filter(bias == "Female_biased"))$Gene
+unbiased.genes.lhm.o <- (sb.genes.lhm.o %>% filter(bias == "Unbiased"))$Gene
+
+df.y <- data.frame(Term1 = c("Dah_FB", "Dah_FB", "Dah_FB", "Dah_FB", " ",  
+                           "Dah_MB", "Dah_MB", "Dah_MB", "Dah_MB", " ", 
+                           "Dah_UB", "Dah_UB", "Dah_UB", "Dah_UB", " "),
+                 Term2 = c("LHm_FB", "LHm_MB", "LHm_UB", " ", "LHm_FB",
+                           "LHm_FB", "LHm_MB", "LHm_UB", " ", "LHm_MB",
+                           "LHm_FB", "LHm_MB", "LHm_UB", " ", "LHm_UB"),
+                 value = c(
+                   sum(female.biased.genes.dah.y %in% female.biased.genes.lhm.y),
+                   sum(female.biased.genes.dah.y %in% male.biased.genes.lhm.y),
+                   sum(female.biased.genes.dah.y %in% unbiased.genes.lhm.y),
+                   sum(!(female.biased.genes.dah.y %in% female.biased.genes.lhm.y & female.biased.genes.dah.y %in% male.biased.genes.lhm.y & female.biased.genes.dah.y %in% unbiased.genes.lhm.y)),
+                   sum(!(female.biased.genes.lhm.y %in% female.biased.genes.dah.y & female.biased.genes.lhm.y %in% male.biased.genes.dah.y & female.biased.genes.lhm.y %in% unbiased.genes.dah.y)),
+                   
+                   sum(male.biased.genes.dah.y %in% female.biased.genes.lhm.y),
+                   sum(male.biased.genes.dah.y %in% male.biased.genes.lhm.y),
+                   sum(male.biased.genes.dah.y %in% unbiased.genes.lhm.y),
+                   sum(!(male.biased.genes.dah.y %in% female.biased.genes.lhm.y & male.biased.genes.dah.y %in% male.biased.genes.lhm.y & male.biased.genes.dah.y %in% unbiased.genes.lhm.y)),
+                   sum(!(male.biased.genes.lhm.y %in% female.biased.genes.dah.y & male.biased.genes.lhm.y %in% male.biased.genes.dah.y & male.biased.genes.lhm.y %in% unbiased.genes.dah.y)),
+                   
+                   sum(unbiased.genes.dah.y %in% female.biased.genes.lhm.y),
+                   sum(unbiased.genes.dah.y %in% male.biased.genes.lhm.y),
+                   sum(unbiased.genes.dah.y %in% unbiased.genes.lhm.y),
+                   sum(!(unbiased.genes.dah.y %in% female.biased.genes.lhm.y & unbiased.genes.dah.y %in% male.biased.genes.lhm.y & unbiased.genes.dah.y %in% unbiased.genes.lhm.y)),
+                   sum(!(unbiased.genes.lhm.y %in% female.biased.genes.dah.y & unbiased.genes.lhm.y %in% male.biased.genes.dah.y & unbiased.genes.lhm.y %in% unbiased.genes.dah.y))
+                 ))
+
+df.o <- data.frame(Term1 = c("Dah_FB", "Dah_FB", "Dah_FB", "Dah_FB", " ",  
+                           "Dah_MB", "Dah_MB", "Dah_MB", "Dah_MB", " ", 
+                           "Dah_UB", "Dah_UB", "Dah_UB", "Dah_UB", " "),
+                 Term2 = c("LHm_FB", "LHm_MB", "LHm_UB", " ", "LHm_FB",
+                           "LHm_FB", "LHm_MB", "LHm_UB", " ", "LHm_MB",
+                           "LHm_FB", "LHm_MB", "LHm_UB", " ", "LHm_UB"),
+                 value = c(
+                   sum(female.biased.genes.dah.o %in% female.biased.genes.lhm.o),
+                   sum(female.biased.genes.dah.o %in% male.biased.genes.lhm.o),
+                   sum(female.biased.genes.dah.o %in% unbiased.genes.lhm.o),
+                   sum(!(female.biased.genes.dah.o %in% female.biased.genes.lhm.o & female.biased.genes.dah.o %in% male.biased.genes.lhm.o & female.biased.genes.dah.o %in% unbiased.genes.lhm.o)),
+                   sum(!(female.biased.genes.lhm.o %in% female.biased.genes.dah.o & female.biased.genes.lhm.o %in% male.biased.genes.dah.o & female.biased.genes.lhm.o %in% unbiased.genes.dah.o)),
+                   
+                   sum(male.biased.genes.dah.o %in% female.biased.genes.lhm.o),
+                   sum(male.biased.genes.dah.o %in% male.biased.genes.lhm.o),
+                   sum(male.biased.genes.dah.o %in% unbiased.genes.lhm.o),
+                   sum(!(male.biased.genes.dah.o %in% female.biased.genes.lhm.o & male.biased.genes.dah.o %in% male.biased.genes.lhm.o & male.biased.genes.dah.o %in% unbiased.genes.lhm.o)),
+                   sum(!(male.biased.genes.lhm.o %in% female.biased.genes.dah.o & male.biased.genes.lhm.o %in% male.biased.genes.dah.o & male.biased.genes.lhm.o %in% unbiased.genes.dah.o)),
+                   
+                   sum(unbiased.genes.dah.o %in% female.biased.genes.lhm.o),
+                   sum(unbiased.genes.dah.o %in% male.biased.genes.lhm.o),
+                   sum(unbiased.genes.dah.o %in% unbiased.genes.lhm.o),
+                   sum(!(unbiased.genes.dah.o %in% female.biased.genes.lhm.o & unbiased.genes.dah.o %in% male.biased.genes.lhm.o & unbiased.genes.dah.o %in% unbiased.genes.lhm.o)),
+                   sum(!(unbiased.genes.lhm.o %in% female.biased.genes.dah.o & unbiased.genes.lhm.o %in% male.biased.genes.dah.o & unbiased.genes.lhm.o %in% unbiased.genes.dah.o))
+                 ))
+  
+p.y <- ggplot(df.y, aes(Term1, Term2)) +
+  theme_bw(base_size = 12) +
+  ggtitle("Young flies") +
+  geom_tile(aes(fill = value), color='white', size = 0.5) +
+  coord_equal() +
+  geom_text(aes(Term1, Term2, label = value), color = "black", size = 5)  +
+  scale_fill_gradient2(low = "#e0f3db", high = "#e0f3db", mid = "#e0f3db", 
+                       midpoint = 0.5, limit = c(0,1000000), space = "Lab") +
+  theme(plot.background = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 13, angle = 45, hjust=1),
+    axis.text.y = element_text(size = 13),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()) +
+  theme(text = element_text(),
+        legend.position="none") +
+  scale_x_discrete(position = "bottom")
+
+p.o <- ggplot(df.o, aes(Term1, Term2)) +
+  theme_bw(base_size = 12) +
+  ggtitle("Aged flies") +
+  geom_tile(aes(fill = value), color='white', size = 0.5) +
+  coord_equal() +
+  geom_text(aes(Term1, Term2, label = value), color = "black", size = 5)  +
+  scale_fill_gradient2(low = "#fee6ce", high = "#fee6ce", mid = "#fee6ce", 
+                       midpoint = 0.5, limit = c(0,1000000), space = "Lab") +
+  theme(plot.background = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 13, angle = 45, hjust=1),
+    axis.text.y = element_text(size = 13),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()) +
+  theme(text = element_text(),
+        legend.position="none") +
+  scale_x_discrete(position = "bottom")
+
+p.similvenn <- ggarrange(p.y, p.o,
+                 ncol = 2, nrow = 1,  align = "hv", 
+                 widths = 1, heights = 1,
+                 common.legend = F)
+p.similvenn
+```
+
+# Changes in LFC {.tabset}
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+sb.genes.lhm.y <- sb.calculator(dataset = dds.lhm, p.threshold = p.threshold, term1 = "FemaleA1", term2 = "MaleA1", population = "LHm")
+sb.genes.dah.y <- sb.calculator(dataset = dds.dah, p.threshold = p.threshold, term1 = "FemaleA1", term2 = "MaleA1", population = "Dahomey")
+sb.genes.lhm.o <- sb.calculator(dataset = dds.lhm, p.threshold = p.threshold, term1 = "FemaleA2", term2 = "MaleA2", population = "LHm")
+sb.genes.dah.o <- sb.calculator(dataset = dds.dah, p.threshold = p.threshold, term1 = "FemaleA2", term2 = "MaleA2", population = "Dahomey")
+
+sb.genes.y <- rbind(sb.genes.lhm.y, sb.genes.dah.y)
+sb.genes.o <- rbind(sb.genes.lhm.o, sb.genes.dah.o)
+
+lhm.CD.f <- contrast.calculator(dataset = dds.lhm, term1 = "FemaleA2", term2 = "FemaleA1", population = "LHm")
+lhm.CD.m <- contrast.calculator(dataset = dds.lhm, term1 = "MaleA2", term2 = "MaleA1", population = "LHm")
+dah.CD.f <- contrast.calculator(dataset = dds.dah, term1 = "FemaleA2", term2 = "FemaleA1", population = "Dahomey")
+dah.CD.m <- contrast.calculator(dataset = dds.dah, term1 = "MaleA2", term2 = "MaleA1", population = "Dahomey")
+
+CD.f <- rbind(lhm.CD.f, dah.CD.f)
+CD.m <- rbind(lhm.CD.m, dah.CD.m)
+
+dataset <- data.frame(population = CD.f$Population,
+                gene = CD.f$Gene,
+                bias.class = sb.genes.y$bias,
+                bias.class.old = sb.genes.o$bias,
+                SB.y = sb.genes.y$log2FoldChange,
+                SB.o = sb.genes.o$log2FoldChange,
+                CD.f = CD.f$log2FoldChange,
+                CD.m = CD.m$log2FoldChange)
+
+#gdata::keep(dataset, sure = TRUE)
+```
+
+## Directional
+```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
+dataset.1 <- dataset[complete.cases(dataset),] #[dataset$bias.class != "Undefined",]
+dataset.1 <- dataset.1[,c("population", "gene", "bias.class", "CD.f", "CD.m")]
+colnames(dataset.1) <- c("Population", "Gene", "Bias", "Female", "Male")
+dataset.1 <- dataset.1[complete.cases(dataset.1),]
+dataset.1 <- reshape2::melt(dataset.1, id.vars = c("Population", "Gene", "Bias"))
+colnames(dataset.1) <- c("Population", "Gene", "Bias", "Sex", "lFC")
+
+plot.graph.lfc <- function(population, yli, ylabyn){
+  
+  # New facet label names for Sex variable
+  supp.labs <- c(paste(population, "Female"),  paste(population, "Male"))
+  names(supp.labs) <- c("Female", "Male")
+
+  gex.plot.a <- ggplot(dataset.1[which(dataset.1$Population == population),], aes(x = Bias, y = lFC, fill = Bias)) +
+  facet_wrap( ~ Sex, labeller = labeller(Sex = supp.labs)) +
+  theme_bw(base_size = 12) +
+  geom_boxplot(outlier.shape=NA, notch=T) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"),
+        panel.grid = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position="none",
+        legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
+        legend.text = element_text(size = 12),
+        panel.background = element_rect(size = 0.5, linetype = "solid")) +
+        #strip.background = element_rect(fill = "white")) +
+  scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),#, "Undefined"),
+                    labels=c("FB", "MB", "UB"), #, "NA"
+                    values=c("#fb6a4a", "#6baed6", "#cccccc", "#cccccc")) +
+  scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),#, "Undefined"),
+                   labels=c("FB", "MB", "UB")) + #, "NA"
+  geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
+  ylim(-yli, yli) +
+  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""}) #+ ggtitle(paste0(population))
+gex.plot.a
+}
+
+plot.lfc.lhm <- plot.graph.lfc(population = "LHm", yli = 0.15, ylabyn = T)
+plot.lfc.dah <- plot.graph.lfc(population = "Dahomey", yli = 2.5, ylabyn = F)
+
+p.1 <- ggarrange(plot.lfc.lhm, plot.lfc.dah,
+                 ncol = 2, nrow = 1,  align = "hv", 
+                 widths = 1, heights = 1,
+                 common.legend = F)
+
+save_plot("Figures/Boxplot_LFC_directional.pdf", p.1, base_width = 10, base_height = 3)
+p.1
+```
+
+## Absolute changes 
+```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
+plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
+  
+  # New facet label names for Sex variable
+  supp.labs <- c(paste(population, "Female"),  paste(population, "Male"))
+  names(supp.labs) <- c("Female", "Male")
+  
+  gex.plot.a <- ggplot(dataset.1[which(dataset.1$Population == population),], aes(x = Bias, y = abs(lFC), fill = Bias)) +
+  facet_wrap( ~ Sex, labeller = labeller(Sex = supp.labs)) +
+  theme_bw(base_size = 12) +
+  geom_boxplot(outlier.shape=NA, notch=T) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"),
+        panel.grid = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position="none",
+        legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
+        legend.text = element_text(size = 12),
+        panel.background = element_rect(size = 0.5, linetype = "solid")) +
+        #strip.background = element_rect(fill = "white")) +
+  scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                    labels=c("FB", "MB", "UB"),
+                    values=c("#fb6a4a", "#6baed6", "#cccccc")) +
+  scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                   labels=c("FB", "MB", "UB")) +
+  ylim(0, yli) +
+  ylab(if(ylabyn == T){"abs log2FC \n (Old - Young)"} else {""}) +
+#  ggtitle(paste0(population)) +
+  geom_segment(aes(x = 1, y = y1, xend = 1.9, yend = y1)) +
+  geom_segment(aes(x = 2.1, y = y2, xend = 3, yend = y2)) +
+  geom_segment(aes(x = 1, y = y3, xend = 3, yend = y3)) +
+  annotate(geom="text", x=1.5, if(population == "LHm"){y=y1+0.005}else{y=y1+0.1}, label=ifelse(population == "LHm", "", " ")) +
+  annotate(geom="text", x=2.5, if(population == "LHm"){y=y2+0.005}else{y=y2+0.1}, label=ifelse(population == "LHm", " ", " ")) +
+  annotate(geom="text", x=2, if(population == "LHm"){y=y3+0.005}else{y=y3+0.1}, label=ifelse(population == "LHm", " ", " "))
+gex.plot.a
+}
+
+plot.lfc.lhm <- plot.graph.lfc(population = "LHm", yli = 0.16, ylabyn = T,
+                               y1 = 0.12, y2 = 0.12, y3 = 0.15)
+plot.lfc.dah <- plot.graph.lfc(population = "Dahomey", yli = 2.7, ylabyn = F,
+                               y1 = 2, y2 = 2, y3 = 2.4)
+
+
+p.2 <- ggarrange(plot.lfc.lhm, plot.lfc.dah,
+                 ncol = 2, nrow = 1,  align = "hv", 
+                 widths = 1, heights = 1,
+                 common.legend = F)
+save_plot("Figures/Boxplot_LFC_abs.pdf", p.2, base_width = 10, base_height = 3)
+p.2
+```
+
+## Directional Changes along sexualisation/desexualisation axis
+This is like "flipping" the change of directions in males when genes are female-biased and viceversa. Good for visualization, not for testing
+```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
+dataset.3 <- dataset[complete.cases(dataset),]
+# Flip the sign of change of direction only when Bias and Sex disagree, which means that lFC -> more desexualization
+dataset.3$CD.f <- ifelse(dataset.3$bias.class == "Male_biased", -dataset.3$CD.f, dataset.3$CD.f)
+dataset.3$CD.m <- ifelse(dataset.3$bias.class == "Female_biased", -dataset.3$CD.m, dataset.3$CD.m)
+
+dataset.3 <- dataset.3[,c("population", "gene", "bias.class", "CD.f", "CD.m")]
+colnames(dataset.3) <- c("Population", "Gene", "Bias", "Female", "Male")
+#dataset.3 <- dataset.3[complete.cases(dataset.3),]
+dataset.3 <- reshape2::melt(dataset.3, id.vars = c("Population", "Gene", "Bias"))
+colnames(dataset.3) <- c("Population", "Gene", "Bias", "Sex", "lFC")
+
+plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
+  
+  # New facet label names for Sex variable
+  supp.labs <- c(paste(population, "Female"),  paste(population, "Male"))
+  names(supp.labs) <- c("Female", "Male")
+  
+  gex.plot.a <- ggplot(dataset.3[which(dataset.3$Population == population),], aes(x = Bias, y = lFC, fill = Bias)) +
+  facet_wrap( ~ Sex, labeller = labeller(Sex = supp.labs)) +
+  theme_bw(base_size = 12) +
+  geom_boxplot(outlier.shape=NA, notch=T) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"),
+        panel.grid = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position="none",
+        legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
+        legend.text = element_text(size = 12),
+        panel.background = element_rect(size = 0.5, linetype = "solid")) +
+        #strip.background = element_rect(fill = "white")) +
+  scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                    labels=c("FB", "MB", "UB"),
+                    values=c("#fb6a4a", "#6baed6", "#cccccc")) +
+  scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                   labels=c("FB", "MB", "UB")) +
+  geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
+  ylim(-yli, yli) +
+  ylab(if(ylabyn == T){"Sexualization \n (Old vs. Young)"} else {""}) +
+  #ggtitle(paste0(population)) +
+  geom_segment(aes(x = 1, y = y1, xend = 1.9, yend = y1)) +
+  geom_segment(aes(x = 2.1, y = y2, xend = 3, yend = y2)) +
+  geom_segment(aes(x = 1, y = y3, xend = 3, yend = y3)) +
+  annotate(geom="text", x=1.5, if(population == "LHm"){y=y1+0.005}else{y=y1+0.1}, label=" ") +
+  annotate(geom="text", x=2.5, if(population == "LHm"){y=y2+0.005}else{y=y2+0.1}, label=" ") +
+  annotate(geom="text", x=2, if(population == "LHm"){y=y3+0.005}else{y=y3+0.1}, label=" ")
+gex.plot.a
+}
+
+plot.lfc.lhm <- plot.graph.lfc(population = "LHm", yli = 0.18, ylabyn = T,
+                               y1 = 0.1, y2 = 0.1, y3 = 0.15)
+plot.lfc.dah <- plot.graph.lfc(population = "Dahomey", yli =1.8, ylabyn = F,
+                               y1 = 1, y2 = 1., y3 = 1.5)
+
+p.3 <- ggarrange(plot.lfc.lhm, plot.lfc.dah,
+                 ncol = 2, nrow = 1,  align = "hv", 
+                 widths = 1, heights = 1,
+                 common.legend = F)
+save_plot("Figures/Boxplot_LFC_desexualization.pdf", p.3, base_width = 10, base_height = 3)
+p.3
+```
+
+## Directional changes where SB genes are SB in either old or young (extended SB set)
+```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
+dataset.y.o <- data.frame(population = CD.f$Population,
+                gene = CD.f$Gene,
+                # if the bias at young is "Unbiased" try to use bias at old instead (so it becomes biased if old is biased)
+                bias.class = ifelse(sb.genes.y$bias != "Unbiased", sb.genes.y$bias, sb.genes.o$bias),
+                SB.y = sb.genes.y$log2FoldChange,
+                SB.o = sb.genes.o$log2FoldChange,
+                CD.f = CD.f$log2FoldChange,
+                CD.m = CD.m$log2FoldChange)
+
+dataset.y.o <- dataset.y.o[complete.cases(dataset.y.o),]
+dataset.y.o <- dataset.y.o[,c("population", "gene", "bias.class", "CD.f", "CD.m")]
+colnames(dataset.y.o) <- c("Population", "Gene", "Bias", "Female", "Male")
+dataset.y.o <- dataset.y.o[complete.cases(dataset.y.o),]
+dataset.y.o <- reshape2::melt(dataset.y.o, id.vars = c("Population", "Gene", "Bias"))
+colnames(dataset.y.o) <- c("Population", "Gene", "Bias", "Sex", "lFC")
+
+plot.graph.lfc <- function(population, yli, ylabyn){
+  
+  # New facet label names for Sex variable
+  supp.labs <- c(paste(population, "Female"),  paste(population, "Male"))
+  names(supp.labs) <- c("Female", "Male")
+  
+  gex.plot.a <- ggplot(dataset.y.o[which(dataset.y.o$Population == population),], aes(x = Bias, y = lFC, fill = Bias)) +
+  facet_wrap( ~ Sex, labeller = labeller(Sex = supp.labs)) +
+  theme_bw(base_size = 12) +
+  geom_boxplot(outlier.shape=NA, notch=T) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"),
+        panel.grid = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position="none",
+        legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
+        legend.text = element_text(size = 12),
+        panel.background = element_rect(size = 0.5, linetype = "solid")) +
+        #strip.background = element_rect(fill = "white")) +
+  scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                    labels=c("FB", "MB", "UB"),
+                    values=c("#fb6a4a", "#6baed6", "#cccccc")) +
+  scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                   labels=c("FB", "MB", "UB")) +
+  geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
+  ylim(-yli, yli) +
+  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""}) #+ ggtitle(paste0(population))
+gex.plot.a
+}
+
+plot.lfc.lhm <- plot.graph.lfc(population = "LHm", yli = 0.15, ylabyn = T)
+plot.lfc.dah <- plot.graph.lfc(population = "Dahomey", yli = 2.5, ylabyn = F)
+
+p.1 <- ggarrange(plot.lfc.lhm, plot.lfc.dah,
+                 ncol = 2, nrow = 1,  align = "hv", 
+                 widths = 1, heights = 1,
+                 common.legend = F)
+save_plot("Figures/Boxplot_LFC_extendedSB.pdf", p.1, base_width = 10, base_height = 3)
+p.1
+```
+
+## Tissue Specificity 
+```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
+ts <- ts[,c("tau_Male", "tau_Female")]
+
+# LHm
+dataset.lhm <- dataset[complete.cases(dataset),] %>% filter(population == "LHm")
+
+lhm.CD <- dataset.lhm[,c("gene", "bias.class", "CD.f", "CD.m")]
+colnames(lhm.CD) <- c("Gene", "Bias", "Female", "Male")
+lhm.CD <- melt(lhm.CD, id.vars = c("Gene", "Bias"))
+ts.lhm <- merge(ts, lhm.CD, by.x=0, by.y = "Gene")
+ts.lhm.m <- ts.lhm %>% filter(variable == "Male")
+ts.lhm.f <- ts.lhm %>% filter(variable == "Female")
+ts.lhm <- rbind(ts.lhm.m, ts.lhm.f)
+
+ts.lhm.lm.m <- lm(value ~ tau_Male,   ts.lhm.m, na.action=na.exclude)
+ts.lhm.lm.f <- lm(value ~ tau_Female, ts.lhm.f, na.action=na.exclude)
+ts.lhm.lm.m <-as.data.frame(residuals(ts.lhm.lm.m))
+ts.lhm.lm.f <-as.data.frame(residuals(ts.lhm.lm.f))
+colnames(ts.lhm.lm.m) <- c("Residuals")
+colnames(ts.lhm.lm.f) <- c("Residuals")
+
+ts.lhm.lm.mf <- rbind(ts.lhm.lm.m, ts.lhm.lm.f)
+
+residuals.plot.lhm <- ts.lhm[,c("Row.names", "Bias", "variable")]
+residuals.plot.lhm <- cbind(residuals.plot.lhm, ts.lhm.lm.mf)
+colnames(residuals.plot.lhm) <- c("Gene", "Bias", "Sex", "Residuals")
+residuals.plot.lhm <- residuals.plot.lhm[complete.cases(residuals.plot.lhm),]
+
+# Dahomey
+dataset.dah <- dataset[complete.cases(dataset),] %>% filter(population == "Dahomey")
+
+dah.CD <- dataset.dah[,c("gene", "bias.class", "CD.f", "CD.m")]
+colnames(dah.CD) <- c("Gene", "Bias", "Female", "Male")
+dah.CD <- melt(dah.CD, id.vars = c("Gene", "Bias"))
+ts.dah <- merge(ts, dah.CD, by.x=0, by.y = "Gene")
+ts.dah.m <- ts.dah %>% filter(variable == "Male")
+ts.dah.f <- ts.dah %>% filter(variable == "Female")
+ts.dah <- rbind(ts.dah.m, ts.dah.f)
+
+ts.dah.lm.m <- lm(value ~ tau_Male,   ts.dah.m, na.action=na.exclude)
+ts.dah.lm.f <- lm(value ~ tau_Female, ts.dah.f, na.action=na.exclude)
+ts.dah.lm.m <-as.data.frame(residuals(ts.dah.lm.m))
+ts.dah.lm.f <-as.data.frame(residuals(ts.dah.lm.f))
+colnames(ts.dah.lm.m) <- c("Residuals")
+colnames(ts.dah.lm.f) <- c("Residuals")
+
+ts.dah.lm.mf <- rbind(ts.dah.lm.m, ts.dah.lm.f)
+
+residuals.plot.dah <- ts.dah[,c("Row.names", "Bias", "variable")]
+residuals.plot.dah <- cbind(residuals.plot.dah, ts.dah.lm.mf)
+colnames(residuals.plot.dah) <- c("Gene", "Bias", "Sex", "Residuals")
+residuals.plot.dah <- residuals.plot.dah[complete.cases(residuals.plot.dah),]
+
+# New facet label names for Sex variable
+supp.labs <- c(paste("LHm", "Female"),  paste("LHm", "Male"))
+names(supp.labs) <- c("Female", "Male")
+
+gex.plot.lhm <- ggplot(residuals.plot.lhm, aes(x = Bias, y = Residuals, fill = Bias)) +
+facet_wrap( ~ Sex, labeller = labeller(Sex = supp.labs)) +
+theme_bw(base_size = 12) +
+geom_boxplot(outlier.shape=NA, notch=T) +
+theme(axis.title.x=element_blank(),
+      axis.text.x = element_text(color="black"),
+      axis.text.y = element_text(color="black"),
+      panel.grid = element_blank(),
+      legend.position="none",
+      plot.title = element_text(hjust = 0.5),
+      legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
+      legend.text = element_text(size = 12),
+      panel.background = element_rect(size = 0.5, linetype = "solid")) + 
+      #strip.background = element_rect(fill = "grey")) +
+scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                  labels=c("FB", "MB", "UB"),
+                  values=c("#fb6a4a", "#6baed6", "#cccccc")) +
+scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                 labels=c("FB", "MB", "UB")) +
+geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
+ylim(-0.15, 0.15) +
+ylab("log2FC \n (Old - Young)") +
+ggtitle("TS residuals")
+
+supp.labs <- c(paste("Dahomey", "Female"),  paste("Dahomey", "Male"))
+names(supp.labs) <- c("Female", "Male")
+
+gex.plot.dah <- ggplot(residuals.plot.dah, aes(x = Bias, y = Residuals, fill = Bias)) +
+facet_wrap( ~ Sex, labeller = labeller(Sex = supp.labs)) +
+theme_bw(base_size = 12) +
+geom_boxplot(outlier.shape=NA, notch=T) +
+theme(axis.title.x=element_blank(),
+      axis.title.y=element_blank(),
+      axis.text.x = element_text(color="black"),
+      axis.text.y = element_text(color="black"),
+      panel.grid = element_blank(),
+      legend.position="none",
+      plot.title = element_text(hjust = 0.5),
+      legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
+      legend.text = element_text(size = 12),
+      panel.background = element_rect(size = 0.5, linetype = "solid")) +
+      #strip.background = element_rect(fill = "grey")) +
+scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                  labels=c("FB", "MB", "UB"),
+                  values=c("#fb6a4a", "#6baed6", "#cccccc")) +
+scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                 labels=c("FB", "MB", "UB")) +
+geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
+ylim(-2.5, 2.5) +
+ylab("log2FC \n (Old - Young)") +
+ggtitle("TS residuals")
+
+p <- ggarrange(gex.plot.lhm, gex.plot.dah,
+                 ncol = 2, nrow = 1,  align = "hv", 
+                 widths = 1, heights = 1,
+                 common.legend = F)
+save_plot("Figures/Boxplot_LFC_TS.pdf", p, base_width = 10, base_height = 3)
+p
+```
+
+# Test (bayesian approach)
+```{r, warning=FALSE, message=FALSE, echo=FALSE, results='hide'}
+bayes.test <- function(population, dataset){
+  dataset <- dataset[dataset$Bias != "Undefined",]
+  dataset <- dataset[which(dataset$Population == population),]
+  dataset <- dataset[complete.cases(dataset),]
+  m <- stan_glm(lFC ~ Sex * Bias, data = dataset, cores = 8, seed = 100, refresh = 0)
+  return(m)
+}
+
+bayes.test.group <- function(population, dataset){
+  dataset <- dataset[dataset$Bias != "Undefined",]
+  dataset <- dataset[which(dataset$Population == population),]
+  dataset <- dataset[complete.cases(dataset),]
+  dataset$group <- factor(paste0(dataset$Sex, dataset$Bias))
+  m <- stan_glm(lFC ~ group, data = dataset, cores = 8, seed = 100, refresh = 0)
+  return(m)
+}
+
+bayes.test.residuals <- function(dataset){
+  dataset <- dataset[dataset$Bias != "Undefined",]
+  dataset <- dataset[complete.cases(dataset),]
+  m <- stan_glm(Residuals ~ Sex * Bias, data = dataset, cores = 8, seed = 100, refresh = 0)
+  return(m)
+}
+
+bayes.test.residuals.group <- function(dataset){
+  dataset <- dataset[dataset$Bias != "Undefined",]
+  dataset <- dataset[complete.cases(dataset),]
+  dataset$group <- factor(paste0(dataset$Sex, dataset$Bias))
+  m <- stan_glm(Residuals ~ group, data = dataset, cores = 8, seed = 100, refresh = 0)
+  return(m)
+}
+
+m.lhm <- bayes.test.group(population = "LHm", dataset = dataset.1)
+m.dah <- bayes.test.group(population = "Dahomey", dataset = dataset.1)
+
+dataset.1.abs <- dataset.1
+dataset.1.abs$lFC <- abs(dataset.1$lFC)
+m.dah.abs <- bayes.test.group(population = "Dahomey", dataset = dataset.1.abs)
+m.lhm.abs <- bayes.test.group(population = "LHm", dataset = dataset.1.abs)
+
+m.lhm.extendedSB <- bayes.test.group(population = "LHm", dataset = dataset.y.o)
+m.dah.extendedSB <- bayes.test.group(population = "Dahomey", dataset = dataset.y.o)
+m.lhm.TS <- bayes.test.residuals.group(residuals.plot.lhm[complete.cases(residuals.plot.lhm),])
+m.dah.TS <- bayes.test.residuals.group(residuals.plot.dah[complete.cases(residuals.plot.dah),])
+
+bayes.contrasts <- function(m){
+  b.con <- as.data.frame(m)
+  b.con <- b.con[,c(1:6)]
+  colnames(b.con)[1] <- c("Intercept")
+  b.con$Female_FB <- b.con$Intercept 
+  b.con$Female_MB <- b.con$Intercept + b.con$BiasMale_biased
+  b.con$Female_UB <- b.con$Intercept + b.con$BiasUnbiased
+  b.con$Male_FB <- b.con$Intercept + b.con$SexMale
+  b.con$Male_MB <- b.con$Intercept + b.con$SexMale + b.con$BiasMale_biased + b.con$`SexMale:BiasMale_biased`
+  b.con$Male_UB <- b.con$Intercept + b.con$SexMale + b.con$BiasUnbiased + b.con$`SexMale:BiasUnbiased`
+  return(b.con)
+}
+
+bayes.contrasts.group <- function(m){
+  b.con <- as.data.frame(m)
+  b.con <- b.con[,c(1:6)]
+  colnames(b.con)[1] <- c("Intercept")
+  
+  b.con$Female_FB <- b.con$Intercept 
+  b.con$Female_MB <-  b.con$Intercept + b.con$groupFemaleMale_biased
+  b.con$Female_UB <-  b.con$Intercept + b.con$groupFemaleUnbiased
+  b.con$Male_FB <-  b.con$Intercept + b.con$groupMaleFemale_biased
+  b.con$Male_MB <-  b.con$Intercept + b.con$groupMaleMale_biased
+  b.con$Male_UB <-  b.con$Intercept + b.con$groupMaleUnbiased
+  return(b.con)
+}
+```
+
+## LHm
+### Model summary LHm
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+prior_summary(m.lhm)
+intercept <- m.lhm$coefficients["(Intercept)"]
+mcmc_areas(m.lhm, transformations = list("groupFemaleMale_biased" = function(x) x + intercept,
+                                         "groupFemaleUnbiased" = function(x) x + intercept,
+                                         "groupMaleFemale_biased" = function(x) x + intercept,
+                                         "groupMaleMale_biased" = function(x) x + intercept,
+                                         "groupMaleUnbiased" = function(x) x + intercept))
+intercept <- m.lhm.abs$coefficients["(Intercept)"]
+mcmc_areas(m.lhm.abs, transformations = list("groupFemaleMale_biased" = function(x) x + intercept,
+                                         "groupFemaleUnbiased" = function(x) x + intercept,
+                                         "groupMaleFemale_biased" = function(x) x + intercept,
+                                         "groupMaleMale_biased" = function(x) x + intercept,
+                                         "groupMaleUnbiased" = function(x) x + intercept))
+```
+
+### Contrasts LHm directional {.tabset}
+#### P <0.05
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+contr.bay <- function(model, type, pvalue){
+  b.con <- bayes.contrasts.group(model)
+  b.con.h <- if(type == "directional"){hypothesis(b.con, 
+                                  c("(Male_FB - Male_UB) + (Female_FB - Female_UB) = 0",
+                                    "(Male_MB - Male_UB) + (Female_MB - Female_UB) = 0",
+                                    "(Male_FB - Male_UB) + (Male_MB - Male_UB) = 0",
+                                    "(Female_FB - Female_UB) + (Female_MB - Female_UB) = 0",
+                                    "Male_FB - Male_UB = 0",
+                                    "Male_MB - Male_UB = 0",
+                                    "Female_FB - Female_UB = 0",
+                                    "Female_MB - Female_UB = 0",
+                                    "(Male_FB-Male_UB) - (Female_MB-Female_UB) = 0",
+                                    "(Male_MB-Male_UB) - (Female_FB-Female_UB) = 0"),
+                             alpha = pvalue)
+                     } else {hypothesis(b.con, 
+                                  c("Female_FB = Female_UB",
+                                    "Female_MB = Female_UB",
+                                    "Male_FB = Male_UB",
+                                    "Male_MB = Male_UB",
+                                    "Male_FB = Female_FB",
+                                    "Male_MB = Female_MB",
+                                    "Male_FB = Male_MB",
+                                    "Female_FB = Female_MB",
+                                    "Male_FB = Female_MB",
+                                    "Male_MB = Female_FB"),
+                             alpha = pvalue)}
+  b.con.h <- as.data.frame(b.con.h$hypothesis)
+  b.con.h <- b.con.h[c(1, 8, 2:7)]
+  return(b.con.h)
+}
+
+get.p <- function(samples){
+  if(mean(samples) > 0){
+    p <- sum(samples <= 0)/length(samples)
+  }else{
+    p <- sum(samples >= 0)/length(samples)
+  }
+  return(max(p*2, (1/4000)*2))
+}
+
+b.con.h <- contr.bay(model = m.lhm,
+                     type = "directional",
+                     pvalue = 0.05)
+
+b.con.samples <- bayes.contrasts.group(m.lhm)
+
+b.con.h$Pmcmc <- c(get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+
+b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
+write.table(b.con.h, "Tables/bayes_directional_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
+b.con.h
+```
+
+### Contrasts LHm abs {.tabset}
+#### P <0.05
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+b.con.h <- contr.bay(model = m.lhm.abs,
+                     type = "absolute",
+                     pvalue = 0.05)
+
+b.con.samples <- bayes.contrasts.group(m.lhm.abs)
+b.con.h$Pmcmc <- c(get.p(b.con.samples$Female_FB - b.con.samples$Female_UB),
+               get.p(b.con.samples$Female_MB - b.con.samples$Female_UB),
+               get.p(b.con.samples$Male_FB - b.con.samples$Male_UB),
+               get.p(b.con.samples$Male_MB - b.con.samples$Male_UB),
+               get.p(b.con.samples$Male_FB - b.con.samples$Female_MB),
+               get.p(b.con.samples$Male_MB - b.con.samples$Female_MB),
+               get.p(b.con.samples$Male_FB - b.con.samples$Male_MB),
+               get.p(b.con.samples$Female_FB - b.con.samples$Female_MB),
+               get.p(b.con.samples$Male_FB - b.con.samples$Female_MB),
+               get.p(b.con.samples$Male_MB - b.con.samples$Female_FB))
+#b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob))
+b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
+write.table(b.con.h, "Tables/bayes_absolute_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
+b.con.h
+```
+
+### Contrasts LHm directional - extended SB {.tabset}
+#### P <0.05
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+b.con.h <- contr.bay(model = m.lhm.extendedSB,
+                     type = "directional",
+                     pvalue = 0.05)
+
+b.con.samples <- bayes.contrasts.group(m.lhm.extendedSB)
+
+b.con.h$Pmcmc <- c(get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
+write.table(b.con.h, "Tables/bayes_extendedSB_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
+b.con.h
+```
+
+### Contrasts LHm directional - TS {.tabset}
+#### P <0.05
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+b.con.h <- contr.bay(model = m.lhm.TS,
+                     type = "directional",
+                     pvalue = 0.05)
+
+b.con.samples <- bayes.contrasts.group(m.lhm.TS)
+
+b.con.h$Pmcmc <- c(get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
+write.table(b.con.h, "Tables/bayes_TS_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
+b.con.h
+```
+
+## Dahomey
+### Model summary Dahomey
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+prior_summary(m.dah)
+intercept <- m.dah$coefficients["(Intercept)"]
+mcmc_areas(m.dah, transformations = list("groupFemaleMale_biased" = function(x) x + intercept,
+                                         "groupFemaleUnbiased" = function(x) x + intercept,
+                                         "groupMaleFemale_biased" = function(x) x + intercept,
+                                         "groupMaleMale_biased" = function(x) x + intercept,
+                                         "groupMaleUnbiased" = function(x) x + intercept))
+intercept <- m.dah.abs$coefficients["(Intercept)"]
+mcmc_areas(m.dah.abs, transformations = list("groupFemaleMale_biased" = function(x) x + intercept,
+                                         "groupFemaleUnbiased" = function(x) x + intercept,
+                                         "groupMaleFemale_biased" = function(x) x + intercept,
+                                         "groupMaleMale_biased" = function(x) x + intercept,
+                                         "groupMaleUnbiased" = function(x) x + intercept))
+```
+
+### Contrasts Dahomey directional {.tabset}
+#### P <0.05
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+b.con.h <- contr.bay(model = m.dah,
+                     type = "directional",
+                     pvalue = 0.05)
+
+b.con.samples <- bayes.contrasts.group(m.dah)
+
+b.con.h$Pmcmc <- c(get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
+write.table(b.con.h, "Tables/bayes_directional_dah.csv", quote = FALSE, sep = ",", row.names = FALSE)
+
+b.con.h
+```
+
+### Contrasts Dahomey abs {.tabset}
+#### P <0.05
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+b.con.h <- contr.bay(model = m.dah.abs,
+                     type = "absolute",
+                     pvalue = 0.05)
+
+b.con.samples <- bayes.contrasts.group(m.dah.abs)
+b.con.h$Pmcmc <- c(get.p(b.con.samples$Female_FB- b.con.samples$Female_UB),
+               get.p(b.con.samples$Female_MB - b.con.samples$Female_UB),
+               get.p(b.con.samples$Male_FB - b.con.samples$Male_UB),
+               get.p(b.con.samples$Male_MB - b.con.samples$Male_UB),
+               get.p(b.con.samples$Male_FB - b.con.samples$Female_MB),
+               get.p(b.con.samples$Male_MB - b.con.samples$Female_MB),
+               get.p(b.con.samples$Male_FB - b.con.samples$Male_MB),
+               get.p(b.con.samples$Female_FB - b.con.samples$Female_MB),
+               get.p(b.con.samples$Male_FB - b.con.samples$Female_MB),
+               get.p(b.con.samples$Male_MB - b.con.samples$Female_FB))
+b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
+write.table(b.con.h, "Tables/bayes_absolute_dah.csv", quote = FALSE, sep = ",", row.names = FALSE)
+
+b.con.h
+```
+
+### Contrasts Dah directional - extended SB {.tabset}
+#### P <0.05
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+b.con.h <- contr.bay(model = m.dah.extendedSB,
+                     type = "directional",
+                     pvalue = 0.05)
+
+b.con.samples <- bayes.contrasts.group(m.dah.extendedSB)
+
+b.con.h$Pmcmc <- c(get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
+write.table(b.con.h, "Tables/bayes_extendedSB_dah.csv", quote = FALSE, sep = ",", row.names = FALSE)
+
+b.con.h
+```
+
+### Contrasts Dah directional - TS {.tabset}
+#### P <0.05
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+b.con.h <- contr.bay(model = m.dah.TS,
+                     type = "directional",
+                     pvalue = 0.05)
+
+b.con.samples <- bayes.contrasts.group(m.dah.TS)
+
+b.con.h$Pmcmc <- c(get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) + (b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB) + (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
+write.table(b.con.h, "Tables/bayes_TS_dah.csv", quote = FALSE, sep = ",", row.names = FALSE)
+
+b.con.h
+```
+
+## Coefficient of variation 
+### Graph
+```{r, warning=FALSE, fig.height = 3, fig.width = 3, message=FALSE, echo=FALSE}
+cv.calculator <- function(vstdata){
+  vstdata <- vstdata
+  vstdata$combined1 = factor(paste0(vstdata$Sex, "_", vstdata$Age))
+  rldPerLvl_sex <- sapply(levels(vstdata$combined1),  
+                        function(x){
+                          aaa <- rowSds(assay(vstdata)[,vstdata$combined1 == x], na.rm = TRUE) /   rowMeans(assay(vstdata)[,vstdata$combined1 == x], na.rm = TRUE)
+                          aaa <- setDT(as.data.frame(aaa), keep.rownames = TRUE)[]
+                          aaa <- aaa[,c("aaa")]
+                          return(aaa)},
+                        simplify = FALSE,USE.NAMES = TRUE)
+  vstdata <- do.call(cbind, rldPerLvl_sex)
+  vstdata <- cbind(dataset[,c(2,3)], vstdata)
+  names(vstdata) <- gsub("\\..*","", names(vstdata))
+  vstdata <- melt(vstdata, id.vars = c("gene", "bias"))
+  vstdata <- vstdata[complete.cases(vstdata),]
+  #vstdata <- vstdata[order(variable, gene),]
+  vstdata$sex <- NA
+  vstdata$sex <- ifelse(grepl("Female_",vstdata$variable),"Female", "Male")
+  vstdata$variable <- gsub(".*_","",vstdata$variable)
+  return(vstdata)
+}
+
+plot.cv <- function(vstdata, ylimi, population){
+  # New facet label names for Sex variable
+  supp.labs <- c(paste(population, "Female"),  paste(population, "Male"))
+  names(supp.labs) <- c("Female", "Male")
+  
+  p1 <- ggplot(vstdata, aes(x = variable, y = value)) +
+    facet_wrap( ~ sex, labeller = labeller(sex = supp.labs)) +
+    theme_bw(base_size = 15) + 
+    geom_boxplot(outlier.colour="black", notch=T, outlier.shape=NA) +
+    theme(axis.title.x=element_blank(),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"),
+        panel.grid = element_blank())+
+    theme(legend.position="none",
+        legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
+        legend.text = element_text(size = 12),
+        panel.background = element_rect(size = 0.5, linetype = "solid"),
+        #strip.background = element_rect(fill = "grey"),
+        axis.text.x = element_text(angle = 90, hjust = 1)) +
+    geom_hline(data=data.frame(value= median(subset(vstdata, variable == "A1" & sex == "Female")$value), sex="Female"), aes(yintercept=value),linetype="longdash", color = "red", size=1) +
+    geom_hline(data=data.frame(value= median(subset(vstdata, variable == "A1" & sex == "Male")$value), sex="Male"), aes(yintercept=value),linetype="longdash", color = "red", size=1) +
+    scale_x_discrete(limits=c("A1", "A2"),
+                   labels=c("Young", "Old")) +
+    ylab("CV normalized counts") +
+    ylim(0,ylimi) #+ ggtitle(paste0(population))
+  return(p1)
+}
+
+var.lhm <- cv.calculator(vstdata.lhm)
+var.dah <- cv.calculator(vstdata.dah)
+p1 <- plot.cv(var.lhm, ylimi = 0.02, population = "LHm")
+p2 <- plot.cv(var.dah, ylimi = 0.15, population = "Dahomey")
+
+p <- ggarrange(p1, p2,
+               ncol = 1, nrow = 2,  align = "hv",
+               widths = 1, heights = 1,
+               common.legend = F)
+save_plot("Figures/Coeff_var.pdf", p, base_width = 5, base_height = 5)
+p
+```
+
+### Test {.tabset}
+#### Model LHm
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+model <- lmer(value ~ variable * sex * (1|bias), data = var.lhm)
+Anova(model)
+```
+
+#### Contrasts LHm
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+m1 <- emmeans(model, "variable", by = c("sex"))
+pairs(m1)
+```
+
+#### Model Dahomey
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+model <- lmer(value ~ variable * sex * (1|bias), data = var.dah)
+Anova(model)
+```
+
+#### Contrasts Dahomey
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+m1 <- emmeans(model, "variable", by = c("sex"))
+pairs(m1)
+```
+
+# Are males the more sensitive sex – do SB genes change more in males?
+In this graph CD is regressed over abs(SB). Panels are split by bias.class and population. Lines represent females (red) and males (blue).
+```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
+dataset.4 <- dataset
+dataset.4 <- dataset.4[which(dataset.4$bias.class != "Unbiased"),]
+#dataset.4 <- dataset.4[which(dataset.4$bias.class != "Undefined"),]
+dataset.4$CD.f <- ifelse(dataset.4$bias.class == "Male_biased", -dataset.4$CD.f, dataset.4$CD.f)
+dataset.4$CD.m <- ifelse(dataset.4$bias.class == "Female_biased", -dataset.4$CD.m, dataset.4$CD.m)
+
+dataset.4 <- dataset.4[complete.cases(dataset.4),]
+dataset.4 <- dataset.4[,c("population", "gene", "bias.class", "SB.y", "CD.f", "CD.m")]
+colnames(dataset.4) <- c("Population", "Gene", "Bias", "SB", "Females", "Males")
+dataset.4 <- reshape2::melt(dataset.4, id.vars = c("Population", "Gene", "Bias", "SB"))
+colnames(dataset.4) <- c("Population", "Gene", "Bias", "SB.lFC", "Sex", "CD.lFC")
+dataset.4$Bias <- gsub("_", " ", dataset.4$Bias)
+
+# New facet label names for Sex variable
+supp.labs <- c(paste("LHm", "Female"),  paste("LHm", "Male"))
+names(supp.labs) <- c("Females", "Males")
+d.4.lhm <- dataset.4[which(dataset.4$Population == "LHm"),]
+gex.plot1 <- ggplot(d.4.lhm, aes(y=CD.lFC, x=abs(SB.lFC), color = Bias))  +
+    facet_grid(~ Sex, labeller = labeller(Sex = supp.labs)) +
+    theme_bw(base_size = 12) +
+    #ggtitle("LHm") +
+    geom_point(size = 1, alpha = 0.5) +
+    xlab("Sex-bias (abs log2FC)") +
+    ylab("Sexualization \n (Old vs. Young)") +
+    theme(legend.position="none",
+        legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
+          legend.text = element_text(size = 12),
+          axis.text.x = element_text(color="black"),
+          axis.text.y = element_text(color="black"),
+          panel.background = element_rect(size = 0.5, linetype = "solid"),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          axis.title=element_text(size=12)) +
+    geom_smooth(method=lm, se=TRUE, level = 0.95, fullrange=TRUE, data = filter(d.4.lhm, Bias == "Female biased"), color = "#f03b20") +
+    geom_smooth(method=lm, se=TRUE, level = 0.95, fullrange=TRUE, data = filter(d.4.lhm, Bias == "Male biased"), color = "#2c7fb8")+
+    stat_poly_eq(formula = y ~ x, 
+               aes(label = paste(..eq.label.., sep = "~~~")), 
+               parse = TRUE, vstep = 0.1, coef.digits = 2) +
+    scale_colour_manual(name = "Legend", values=c("#fb6a4a", "#6baed6"),
+                        labels = c("Female biased", "Male biased"), 
+                        breaks = c("Female biased", "Male biased")) +
+    ylim(-0.75,0.75) +
+    xlim(0,0.65)
+
+supp.labs <- c(paste("Dahomey", "Female"),  paste("Dahomey", "Male"))
+names(supp.labs) <- c("Females", "Males")
+
+d.4.dah <- dataset.4[which(dataset.4$Population == "Dahomey"),]
+gex.plot2 <- ggplot(d.4.dah, aes(y=CD.lFC, x=abs(SB.lFC), color = Bias))  +
+    facet_grid(~ Sex, labeller = labeller(Sex = supp.labs)) +
+    theme_bw(base_size = 12) +
+    geom_point(size = 1, alpha = 0.5) +
+    xlab("Sex-bias (abs log2FC)") +
+    ylab("") +
+    theme(legend.position="none",
+          legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
+          legend.text = element_text(size = 12),
+          axis.text.x = element_text(color="black"),
+          axis.text.y = element_text(color="black"),
+          panel.background = element_rect(size = 0.5, linetype = "solid"),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          axis.title=element_text(size=12)) +
+    geom_smooth(method=lm, se=FALSE, level = 0.95, fullrange=TRUE, data = filter(d.4.dah, Bias == "Female biased"), color = "#f03b20") +
+    geom_smooth(method=lm, se=FALSE, level = 0.95, fullrange=TRUE, data = filter(d.4.dah, Bias == "Male biased"), color = "#2c7fb8") +
+    stat_poly_eq(formula = y ~ x, 
+               aes(label = paste(..eq.label.., sep = "~~~")), 
+               parse = TRUE, vstep = 0.1, coef.digits = 2) +  
+    scale_colour_manual(name = "Legend", values=c("#fb6a4a", "#6baed6"),
+                        labels = c("Female biased", "Male biased"), 
+                        breaks = c("Female biased", "Male biased")) +
+    ylim(-4,4) +
+    xlim(0,3.5) 
+
+p <- ggarrange(gex.plot1, gex.plot2,
+                 ncol = 2, nrow = 1,  align = "hv", 
+                 widths = 1, heights = 1,
+                 common.legend = F)
+
+save_plot("Figures/CD_SB.pdf", p, base_width = 10, base_height = 3)
+p
+```
+
+## Test {.tabset}
+
+```{r}
+print.lm <- function(model){
+  model.summary <- summary(model)
+  model.model <- substr(toString(model.summary$call$subset), 4, 1000)
+  model.predictor <- format(terms(model))#model.summary$call$formula
+  
+  coeff.row <- dim(model.summary$coefficients)[1]
+  model.coefficient <- model.summary$coefficients[coeff.row,1]
+  model.SE <- model.summary$coefficients[coeff.row,2]
+  model.p <- model.summary$coefficients[coeff.row,4]
+  model.fstat <- model.summary$fstatistic[1]
+  model.numdf <- model.summary$fstatistic[2]
+  model.dendf <- model.summary$fstatistic[3]
+  model.df <- paste0("F(", model.numdf, ", ", model.dendf, ") = ", round(model.fstat, 2))
+  
+  data.frame(Model = model.model, Formula = model.predictor, Coefficient = model.coefficient, S.E. = model.SE, "p-value" = model.p, "F-stat" = model.df)
+}
+```
+
+
+### LHm Female
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+model1.f.lhm <- lm(CD.lFC ~ abs(SB.lFC), data = dataset.4, subset = c(Sex == "Females" & Bias == "Female biased" & Population == "LHm"))
+model2.f.lhm <- lm(CD.lFC ~ abs(SB.lFC), data = dataset.4, subset = c(Sex == "Females" & Bias == "Male biased" & Population == "LHm"))
+summary(model1.f.lhm)
+summary(model2.f.lhm)
+test.incline.by.bias.f.lhm <- lm(CD.lFC ~ Bias * abs(SB.lFC), data = dataset.4, subset = c(Sex == "Females" & Population == "LHm"))
+summary(test.incline.by.bias.f.lhm)
+```
+
+### LHm Male
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+model1.m.lhm <- lm(CD.lFC ~ abs(SB.lFC), data = dataset.4, subset = c(Sex == "Males" & Bias == "Female biased" & Population == "LHm"))
+model2.m.lhm <- lm(CD.lFC ~ abs(SB.lFC), data = dataset.4, subset = c(Sex == "Males" & Bias == "Male biased" & Population == "LHm"))
+summary(model1.m.lhm)
+summary(model2.m.lhm)
+test.incline.by.bias.m.lhm <- lm(CD.lFC ~ Bias * abs(SB.lFC), data = dataset.4, subset = c(Sex == "Males" & Population == "LHm"))
+summary(test.incline.by.bias.m.lhm)
+```
+
+### LHm Female biased
+```{r}
+test.incline.by.sex.fb.lhm <- lm(CD.lFC ~ Sex * abs(SB.lFC), data = dataset.4, subset = c(Bias == "Female biased" & Population == "LHm"))
+summary(test.incline.by.sex.fb.lhm)
+```
+
+### LHm Male biased
+```{r}
+test.incline.by.sex.mb.lhm <- lm(CD.lFC ~ Sex * abs(SB.lFC), data = dataset.4, subset = c(Bias == "Male biased" & Population == "LHm"))
+summary(test.incline.by.sex.mb.lhm)
+```
+### LHm cis/trans
+```{r}
+dataset.4$group <- paste0(dataset.4$Sex, dataset.4$Bias)
+test.incline.by.sex.and.bias.1.lhm <- lm(CD.lFC ~ group * abs(SB.lFC), data = dataset.4, subset = c((group == "FemalesFemale biased" | group == "MalesMale biased") & Population == "LHm"))
+summary(test.incline.by.sex.and.bias.1.lhm)
+
+test.incline.by.sex.and.bias.2.lhm <- lm(CD.lFC ~ group * abs(SB.lFC), data = dataset.4, subset = c((group == "MalesFemale biased" | group == "FemalesMale biased") & Population == "LHm"))
+summary(test.incline.by.sex.and.bias.2.lhm)
+```
+### Table LHm
+```{r}
+regression.models.lhm <- do.call(rbind, lapply(list(model1.f.lhm, model2.f.lhm, test.incline.by.bias.f.lhm, 
+                           model1.m.lhm, model2.m.lhm, test.incline.by.bias.m.lhm, 
+                           test.incline.by.sex.fb.lhm, test.incline.by.sex.mb.lhm,
+                           test.incline.by.sex.and.bias.1.lhm, test.incline.by.sex.and.bias.2.lhm), print.lm))
+regression.models.lhm
+write.table(regression.models.lhm, "Tables/regression_models_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
+```
+
+### Dahomey Female
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+model1.f.dah <- lm(CD.lFC ~ abs(SB.lFC), data = dataset.4, subset = c(Sex == "Females" & Bias == "Female biased" & Population == "Dahomey"))
+model2.f.dah <- lm(CD.lFC ~ abs(SB.lFC), data = dataset.4, subset = c(Sex == "Females" & Bias == "Male biased" & Population == "Dahomey"))
+summary(model1.f.dah)
+summary(model2.f.dah)
+
+test.incline.by.bias.f.dah <- lm(CD.lFC ~ Bias * abs(SB.lFC), data = dataset.4, subset = c(Sex == "Females" & Population == "Dahomey"))
+summary(test.incline.by.bias.f.dah)
+```
+
+### Dahomey Male
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+model1.m.dah <- lm(CD.lFC ~ abs(SB.lFC), data = dataset.4, subset = c(Sex == "Males" & Bias == "Female biased" & Population == "Dahomey"))
+model2.m.dah <- lm(CD.lFC ~ abs(SB.lFC), data = dataset.4, subset = c(Sex == "Males" & Bias == "Male biased" & Population == "Dahomey"))
+summary(model1.m.dah)
+summary(model2.m.dah)
+test.incline.by.bias.m.dah <- lm(CD.lFC ~ Bias * abs(SB.lFC), data = dataset.4, subset = c(Sex == "Males" & Population == "Dahomey"))
+summary(test.incline.by.bias.m.dah)
+```
+
+### Dahomey Female biased
+```{r}
+test.incline.by.sex.fb.dah <- lm(CD.lFC ~ Sex * abs(SB.lFC), data = dataset.4, subset = c(Bias == "Female biased" & Population == "Dahomey"))
+summary(test.incline.by.sex.fb.dah)
+```
+
+### Dahomey Male biased
+```{r}
+test.incline.by.sex.mb.dah <- lm(CD.lFC ~ Sex * abs(SB.lFC), data = dataset.4, subset = c(Bias == "Male biased" & Population == "Dahomey"))
+summary(test.incline.by.sex.mb.dah)
+```
+
+### Dahomey cis/trans
+```{r}
+dataset.4$group <- paste0(dataset.4$Sex, dataset.4$Bias)
+test.incline.by.sex.and.bias.1.dah <- lm(CD.lFC ~ group * abs(SB.lFC), data = dataset.4, subset = c((group == "FemalesFemale biased" | group == "MalesMale biased") & Population == "Dahomey"))
+summary(test.incline.by.sex.and.bias.1.dah)
+
+test.incline.by.sex.and.bias.2.dah <- lm(CD.lFC ~ group * abs(SB.lFC), data = dataset.4, subset = c((group == "MalesFemale biased" | group == "FemalesMale biased") & Population == "Dahomey"))
+summary(test.incline.by.sex.and.bias.2.dah)
+```
+### Table LHm
+```{r}
+regression.models.dahomey <- do.call(rbind, lapply(list(model1.f.dah, model2.f.dah, test.incline.by.bias.f.dah, 
+                           model1.m.dah, model2.m.dah, test.incline.by.bias.m.dah, 
+                           test.incline.by.sex.fb.dah, test.incline.by.sex.mb.dah,
+                           test.incline.by.sex.and.bias.1.dah, test.incline.by.sex.and.bias.2.dah), print.lm))
+regression.models.dahomey
+write.table(regression.models.dahomey, "Tables/regression_models_dahomey.csv", quote = FALSE, sep = ",", row.names = FALSE)
+```
+
+### LHm/Dahomey incline comparison
+```{r}
+test.incline.by.population.f.fb <- lm(CD.lFC ~ Population * abs(SB.lFC), data = dataset.4, subset = c(Bias == "Female biased" & Sex == "Females"))
+summary(test.incline.by.population.f.fb)
+test.incline.by.population.f.mb <- lm(CD.lFC ~ Population * abs(SB.lFC), data = dataset.4, subset = c(Bias == "Male biased" & Sex == "Females"))
+summary(test.incline.by.population.f.mb)
+test.incline.by.population.m.fb <- lm(CD.lFC ~ Population * abs(SB.lFC), data = dataset.4, subset = c(Bias == "Female biased" & Sex == "Males"))
+summary(test.incline.by.population.m.fb)
+test.incline.by.population.m.mb <- lm(CD.lFC ~ Population * abs(SB.lFC), data = dataset.4, subset = c(Bias == "Male biased" & Sex == "Males"))
+summary(test.incline.by.population.m.mb)
+```
+
+### Table LHm/Dahomey
+```{r}
+incline.by.population <- do.call(rbind, lapply(list(test.incline.by.population.f.fb, test.incline.by.population.f.mb, test.incline.by.population.m.fb, test.incline.by.population.m.mb), print.lm))
+write.table(incline.by.population, "Tables/incline_by_population.csv", quote = FALSE, sep = ",", row.names = FALSE)
+incline.by.population
+```
+
+
+#	Do SB genes change in the same direction in the two sexes? 
+```{r, warning=FALSE, fig.height = 3, fig.width = 6, message=FALSE, echo=FALSE}
+dataset.6 <- subset(dataset, bias.class != 'Unbiased')
+dataset.6 <- dataset[complete.cases(dataset),]
+#dataset.6 <- subset(dataset.6, bias.class != 'Undefined')
+dataset.6$Female <- ifelse(dataset.6$bias.class == "Female_biased", dataset.6$CD.f, -dataset.6$CD.f)
+dataset.6$Male <- ifelse(dataset.6$bias.class == "Female_biased", dataset.6$CD.m, -dataset.6$CD.m)
+dataset.6$angle <- atan2((dataset.6$Female), (dataset.6$Male))
+dataset.6$angle <- dataset.6$angle * 180/pi
+dataset.6$angle <- ifelse(dataset.6$angle <= 0, dataset.6$angle + 360, dataset.6$angle)
+#dataset.6$angle <- ifelse(dataset.6$angle > 180, dataset.6$angle -180, dataset.6$angle)
+dataset.6$category <- cut((dataset.6$angle), breaks = seq(0, 360, 15), labels = seq(0, 345, 15))
+
+dataset.6.p <- dcast(setDT(dataset.6), population + bias.class ~ category, length)
+dataset.6.p <- reshape2::melt(dataset.6.p, id.vars = c("population", "bias.class"))
+colnames(dataset.6.p) <- c("Population", "Bias", "Cluster", "Counts")
+dataset.6.p$CountsRatio <- NA
+
+dataset.6.p[dataset.6.p$Population == "LHm" & dataset.6.p$Bias == "Female_biased",]$CountsRatio <- dataset.6.p[dataset.6.p$Population == "LHm" & dataset.6.p$Bias == "Female_biased",]$Counts/sum(dataset.6.p[dataset.6.p$Population == "LHm" & dataset.6.p$Bias == "Female_biased",]$Counts)
+dataset.6.p[dataset.6.p$Population == "LHm" & dataset.6.p$Bias == "Male_biased",]$CountsRatio <- dataset.6.p[dataset.6.p$Population == "LHm" & dataset.6.p$Bias == "Male_biased",]$Counts/sum(dataset.6.p[dataset.6.p$Population == "LHm" & dataset.6.p$Bias == "Male_biased",]$Counts)
+dataset.6.p[dataset.6.p$Population == "LHm" & dataset.6.p$Bias == "Unbiased",]$CountsRatio <- dataset.6.p[dataset.6.p$Population == "LHm" & dataset.6.p$Bias == "Unbiased",]$Counts/sum(dataset.6.p[dataset.6.p$Population == "LHm" & dataset.6.p$Bias == "Unbiased",]$Counts)
+
+dataset.6.p[dataset.6.p$Population == "Dahomey" & dataset.6.p$Bias == "Female_biased",]$CountsRatio <- dataset.6.p[dataset.6.p$Population == "Dahomey" & dataset.6.p$Bias == "Female_biased",]$Counts/sum(dataset.6.p[dataset.6.p$Population == "Dahomey" & dataset.6.p$Bias == "Female_biased",]$Counts)
+dataset.6.p[dataset.6.p$Population == "Dahomey" & dataset.6.p$Bias == "Male_biased",]$CountsRatio <- dataset.6.p[dataset.6.p$Population == "Dahomey" & dataset.6.p$Bias == "Male_biased",]$Counts/sum(dataset.6.p[dataset.6.p$Population == "Dahomey" & dataset.6.p$Bias == "Male_biased",]$Counts)
+dataset.6.p[dataset.6.p$Population == "Dahomey" & dataset.6.p$Bias == "Unbiased",]$CountsRatio <- dataset.6.p[dataset.6.p$Population == "Dahomey" & dataset.6.p$Bias == "Unbiased",]$Counts/sum(dataset.6.p[dataset.6.p$Population == "Dahomey" & dataset.6.p$Bias == "Unbiased",]$Counts)
+
+plot.polar <- function(population, bias, y1, y2, y3){
+
+  plot <- ggplot(dataset.6.p[which(dataset.6.p$Population == paste0(population) & dataset.6.p$Bias == paste0(bias)),], 
+                 aes(x = Cluster, y = CountsRatio, fill = Bias)) +
+  theme_minimal(base_size = 14) +
+  geom_bar(stat="identity", width=1, position = "dodge", color="black") +
+  ggtitle(paste(population, ifelse(bias == "Female_biased", "FB", "MB"))) +
+  #coord_polar(start = 4.58, direction = -1) +
+  coord_polar(start = 1.44, direction = -1) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid = element_line(color="#d9d9d9"),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.justification = c(0.001, 0.999),
+        legend.text = element_text(size = 11),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        panel.background = element_rect(size = 0.5, linetype = "solid", color="white"),
+        #strip.background = element_rect(fill = "grey"),
+        plot.title = element_text(size = 14, hjust = 0.5)) +
+    scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                    labels=c("Female biased", "Male biased", "Unbiased"),
+                    values=c("#fb6a4a", "#6baed6", "#cccccc")) +
+  geom_text(x=4.1, y=y1, label=paste0(y1), check_overlap = TRUE) +
+  geom_text(x=4.1, y=y2, label=paste0(y2), check_overlap = TRUE) +
+  geom_text(x=4.1, y=y3, label=paste0(y3), check_overlap = TRUE) +
+  xlab(if(bias == "Female_biased"){"log2FC females"}else{"log2FC males"}) +
+  ylab(if(bias == "Female_biased"){"log2FC males"}else{"log2FC females"}) +
+  theme(axis.title.y = element_text(margin = margin(t = 0, r = -5, b = 0, l = 0))) +
+  theme(axis.title.x = element_text(margin = margin(t = -5, r = 0, b = 0, l = 0))) +
+  ylim(0, if(population == "LHm"){0.12}else{0.4})
+plot
+}
+
+plot.lhm.fb <- plot.polar(population = "LHm", bias = "Female_biased", y1=0.06, y2=0.09, y3=0.12)
+plot.lhm.mb <- plot.polar(population = "LHm", bias = "Male_biased", y1=0.06, y2=0.09, y3=0.12)
+plot.dah.fb <- plot.polar(population = "Dahomey", bias = "Female_biased", y1=0.2, y2=0.3, y3=0.4)
+plot.dah.mb <- plot.polar(population = "Dahomey", bias = "Male_biased", y1=0.2, y2=0.3, y3=0.4)
+
+p1 <- ggarrange(plot.lhm.fb, plot.lhm.mb,
+               ncol = 2, nrow = 1,  align = "hv", widths = 1, heights = 1, common.legend = F)
+
+p2 <- ggarrange(plot.dah.fb, plot.dah.mb,
+               ncol = 2, nrow = 1,  align = "hv", widths = 1, heights = 1, common.legend = F)
+
+p <- ggarrange(p1, p2,
+               ncol = 2, nrow = 1)
+save_plot("Figures/Polar_Plot.pdf", p, base_width = 10, base_height = 3)
+p
+```
+
+### Test {.tabset}
+#### Test LHm 
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+polar.test <- function(population){
+  dataset.test <- dataset.6.p[which(dataset.6.p$Population == population),]
+
+  distrib.f2 <- dataset.test[which(dataset.test$Bias == "Female_biased"),]
+  distrib.m2 <- dataset.test[which(dataset.test$Bias == "Male_biased"),]
+
+  print("Null hypothesis: the two samples come from the same distribution")
+  chisq.test(distrib.f2$Counts, distrib.m2$Counts)
+  
+}
+
+polar.test(population = "LHm")
+```
+
+#### Test Dahomey
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+polar.test(population = "Dahomey")
+```
+
+# Test changes in specific genes
+Contrasts are Old/Young
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+list.genes.sdp <- c("FBgn0264270", "FBgn0003741", "FBgn0003449", "FBgn0003977", "FBgn0000662", "FBgn0003742", "FBgn0000504", "FBgn0001276", "FBgn0001185", "FBgn0004652")
+
+list.genes.IIS.TOR <- c("FBgn0044051", "FBgn0036046", "FBgn0044050", "FBgn0044049", "FBgn0044048", "FBgn0044047", "FBgn0044046", "FBgn0036690", "FBgn0013984", "FBgn0001257", "FBgn0024248", "FBgn0015279", "FBgn0015278", "FBgn0020622", "FBgn0026379", "FBgn0020386", "FBgn0260439", "FBgn0010379", "FBgn0023001", "FBgn0038197", "FBgn0003371", "FBgn0020238", "FBgn0004907", "FBgn0264691", "FBgn0029840", "FBgn0013756", "FBgn0032988", "FBgn0261283", "FBgn0262656", "FBgn0261560", "FBgn0260945", "FBgn0015806", "FBgn0261592", "FBgn0020660", "FBgn0086365")
+
+list.genes.IIS.TOR.downstream <- c("FBgn0004852", "FBgn0000261", "FBgn0030506", "FBgn0033127", "FBgn0031461", "FBgn0004507")
+```
+
+## Sex determining pathway {.tabset}
+
+### LHm Female
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+
+contrast.calculator.subset <- function(dataset, term1, term2, population, genes){
+  dataset$group <- relevel(dataset$group, ref = term2)
+  dataset <- nbinomWaldTest(dataset, betaPrior=TRUE)
+  set.seed(1)
+  res.de <- results(dataset, contrast=c("group", term1, term2))
+  res.de <- as.data.frame(res.de)
+  res.de <- setDT(res.de, keep.rownames = TRUE)[]
+  res.de <- res.de[which(res.de$rn %in% genes),]
+  res.de$padj <- p.adjust(res.de$pvalue)
+  res.de <- res.de[,c("rn", "log2FoldChange", "padj")]
+  colnames(res.de) <- c("Gene", "log2FoldChange", "padj")
+  res.de$Population <- paste0(population)
+  return(res.de)
+}
+
+diffExp.genes.lhm.f <- contrast.calculator.subset(dataset = dds.lhm,
+                                term1 = "FemaleA2", term2 = "FemaleA1", 
+                                population = "LHm", genes = list.genes.sdp)
+
+diffExp.genes.lhm.f
+```
+
+### LHm Male
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.dah.m <- contrast.calculator.subset(dataset = dds.lhm,
+                                term1 = "MaleA2", term2 = "MaleA1", 
+                                population = "LHm", genes = list.genes.sdp)
+
+diffExp.genes.dah.m
+```
+
+### Dahomey Female
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.dah.f <- contrast.calculator.subset(dataset = dds.dah,
+                                term1 = "FemaleA2", term2 = "FemaleA1", 
+                                population = "Dah", genes = list.genes.sdp)
+
+diffExp.genes.dah.f
+```
+
+### Dahomey Male
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.dah.m <- contrast.calculator.subset(dataset = dds.dah,
+                                term1 = "MaleA2", term2 = "MaleA1", 
+                                population = "Dah", genes = list.genes.sdp)
+
+diffExp.genes.dah.m
+```
+
+
+## IIS/TOR signaling pathways {.tabset}
+
+### LHm Female
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.lhm.f <- contrast.calculator.subset(dataset = dds.lhm,
+                                term1 = "FemaleA2", term2 = "FemaleA1", 
+                                population = "LHm", genes = list.genes.IIS.TOR)
+
+diffExp.genes.lhm.f
+```
+
+### LHm Male
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.dah.m <- contrast.calculator.subset(dataset = dds.lhm,
+                                term1 = "MaleA2", term2 = "MaleA1", 
+                                population = "LHm", genes = list.genes.IIS.TOR)
+
+diffExp.genes.dah.m
+```
+
+### Dahomey Female
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.dah.f <- contrast.calculator.subset(dataset = dds.dah,
+                                term1 = "FemaleA2", term2 = "FemaleA1", 
+                                population = "Dah", genes = list.genes.IIS.TOR)
+
+diffExp.genes.dah.f
+```
+
+### Dahomey Male
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.dah.m <- contrast.calculator.subset(dataset = dds.dah,
+                                term1 = "MaleA2", term2 = "MaleA1", 
+                                population = "Dah", genes = list.genes.IIS.TOR)
+
+diffExp.genes.dah.m
+```
+
+## downstream of IIS/TOR {.tabset}
+
+### LHm Female
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.lhm.f <- contrast.calculator.subset(dataset = dds.lhm,
+                                term1 = "FemaleA2", term2 = "FemaleA1", 
+                                population = "LHm", genes = list.genes.IIS.TOR.downstream)
+
+diffExp.genes.lhm.f
+```
+
+### LHm Male
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.dah.m <- contrast.calculator.subset(dataset = dds.lhm,
+                                term1 = "MaleA2", term2 = "MaleA1", 
+                                population = "LHm", genes = list.genes.IIS.TOR.downstream)
+
+diffExp.genes.dah.m
+```
+
+### Dahomey Female
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.dah.f <- contrast.calculator.subset(dataset = dds.dah,
+                                term1 = "FemaleA2", term2 = "FemaleA1", 
+                                population = "Dah", genes = list.genes.IIS.TOR.downstream)
+
+diffExp.genes.dah.f
+```
+
+### Dahomey Male
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+diffExp.genes.dah.m <- contrast.calculator.subset(dataset = dds.dah,
+                                term1 = "MaleA2", term2 = "MaleA1", 
+                                population = "Dah", genes = list.genes.IIS.TOR.downstream)
+
+diffExp.genes.dah.m
+```
+
+## Fecundity tests
+
+```{r}
+# Load Data
+AB_Fecundity <- read_delim("../data/fecundity.csv", 
+                           ";", escape_double = FALSE, col_types = cols(
+                                                                        ID = col_character()), trim_ws = TRUE)
+
+# Subset Data
+LHm_dat<-subset(AB_Fecundity,AB_Fecundity$Pop=="LHm")
+Dah_dat<-subset(AB_Fecundity,AB_Fecundity$Pop=="Dah")
+
+# Create plots
+LHm_dat$SRO<-(LHm_dat$Foc_off/LHm_dat$Foc_Par)/(LHm_dat$Comp_off/LHm_dat$Comp_Par)
+Dah_datp<-Dah_dat
+Dah_datp$SRO<-(Dah_datp$Foc_off/Dah_datp$Foc_Par)/(Dah_datp$Comp_off/Dah_datp$Comp_Par)
+
+LHMPlot<-ggboxplot(LHm_dat,y="SRO",x="Age", color="Sex",legend.title ="",ylim=c(0,3.5),xlab = "Age (days)")
+DAHPlot<-ggboxplot(Dah_datp,y="SRO",x="Age", color="Sex",legend.title ="",ylim=c(0,3.5),xlab = "Age (days)")
+
+AB_boxplots<-ggarrange(LHMPlot,DAHPlot,labels =c( "A","B"),legend = "bottom", common.legend=TRUE)
+
+# Export Figure S1
+ggsave("Figures/Suppl1_Fig_AB.pdf",plot=AB_boxplots,device="pdf",width = 16.8, height = 8.4, units = "cm",dpi=1200)
+
+# Modelling the LHm population
+model_LHm<-stan_glmer(Foc_off~Sex*as.factor(Age)+offset(log(Foc_Par))+offset(log(Comp_off/Comp_Par)) + (1|ID), family =poisson, 
+                      data=LHm_dat,
+                      seed=100,
+                      cores=8,
+                      refresh=0)
+                      #iter=4000,
+                      #prior_intercept = normal(location = 0, scale = 10),
+                      #prior = normal(location = 0, scale = 2.5),
+                      #warmup=1000)
+
+model_posteriors<-as.data.frame(model_LHm)
+mpLHM<-model_posteriors[,1:4]
+
+## Testing if LHm-females have aged
+aa<-as.matrix(mpLHM$`as.factor(Age)25`)
+Fem<-posterior_interval(aa, prob = 0.95, type = "central", pars = NULL)
+FemA<-cbind(Fem,mean(aa))
+
+
+## Testing if LHm-males have aged
+aa<-as.matrix(mpLHM$`as.factor(Age)25`+mpLHM$`SexMale:as.factor(Age)25`)
+Mal<-posterior_interval(aa, prob = 0.95, type = "central", pars = NULL)
+MalA<-cbind(Mal,mean(aa))
+
+OO<-rbind(FemA,MalA)
+rownames(OO)<-c("F_Age","M_Age")
+colnames(OO)<-c("2.5%","97.5%","mean")
+
+## Export LHm-results
+write.csv2(OO,"Tables/suppl1_LHm.csv")
+
+# Modelling the Dahomey population
+
+## Part to make random draws for Cage_ID for young flies.
+Dah_Old<-subset(Dah_dat,Dah_dat$Cage>0)
+NO_CAGE<-subset(Dah_dat$Cage,is.na(Dah_dat$Cage))
+Young_dah<-subset(Dah_dat,is.na(Dah_dat$Cage))
+Dah_dat$Cage<-as.character(Dah_dat$Cage)
+Young_dahF<-subset(Young_dah,Young_dah$Sex=="Female")
+Young_dahM<-subset(Young_dah,Young_dah$Sex=="Male")
+
+pool<-as.character(c(1,1,1,1,1,1,2,2,2,2,2,2,3,3,3,3,3,3,4,4,4,4,4,4,5,5,5,5,5,5))
+
+randomvials<-as.data.frame(matrix(NA,nrow=length(pool)*2, ncol=100))
+
+for(i in 1:100){
+  randomvials[,i]<-sample(pool,size=length(pool),replace = FALSE)
+  randomvials[,i]<-sample(pool,size=length(pool),replace = FALSE)
+}
+
+names<-c(1:100)
+colnames(randomvials)<-names
+
+## Get the actual Cage_ID from the old flies
+copyCage<-as.data.frame(matrix(NA,nrow=length(Dah_Old$Cage), ncol=100))
+for(i in 1:100){
+copyCage[,i]<-Dah_Old$Cage
+}
+
+colnames(copyCage)<-names
+
+## Put together the random Cage_IDs (young flies) with the actual Cage_IDs (old flies)
+Randy<-rbind(randomvials,copyCage)
+Dah_ready<-cbind(Dah_dat,Randy)
+Dah_Run<-Dah_ready[,c(2:4,6:9)]
+
+
+## Set up things for the for-loop and result outputs
+TheRun<-Dah_Run
+number=100 
+
+outIntercept<-matrix(NA,nrow=12000,ncol=100)
+outSexMale<-matrix(NA,nrow=12000,ncol=100)
+outAge<-matrix(NA,nrow=12000,ncol=100)
+outSexMaleAge<-matrix(NA,nrow=12000,ncol=100)
+  
+## Run the actual model
+for (i in 1:number){
+  
+  TheRun$Cage<-Dah_ready[,9+i]
+
+  
+  rerun_Dah<-stan_glm(Foc_off~Sex*as.factor(Age)+offset(log(Foc_Par))+offset(log(Comp_off/Comp_Par)) + Cage, family =poisson, 
+                        data=TheRun,
+                        seed=100,
+                        cores=4,
+                        refresh=0)
+                        #iter=4000,adapt_delta = 0.95,
+                        #prior_intercept = normal(location = 0, scale = 10),
+                        #prior = normal(location = 0, scale = 2.5),
+                        #warmup=1000)
+  
+  Dah_re<-as.data.frame(rerun_Dah)
+  FF<-(Dah_re[,c(1:3,8)])
+  
+  outIntercept[,i]<-FF$`(Intercept)`
+  outSexMale[,i]<-FF$SexMale
+  outAge[,i]<-FF$`as.factor(Age)25`
+  outSexMaleAge[,i]<-FF$`SexMale:as.factor(Age)25`
+  
+}
+
+## Join posterior
+FFFF<-outAge #Females
+MMMM<-outAge+outSexMaleAge #Males
+
+as_oneF<-as.matrix(c(as.matrix(FFFF)))
+as_oneM<-as.matrix(c(as.matrix(MMMM)))
+
+## Testing if females have aged
+aa<-as_oneF
+Fem<-posterior_interval(aa, prob = 0.95, type = "central", pars = NULL)
+FemA<-cbind(Fem,mean(aa))
+  
+## Testing if males ages
+aa<-as_oneM
+Mal<-posterior_interval(aa, prob = 0.95, type = "central", pars = NULL)
+MalA<-cbind(Mal,mean(aa))
+  
+DahD<-rbind(FemA,MalA)
+rownames(DahD)<-c("F_Age","M_Age")
+colnames(DahD)<-c("2.5%","97.5%","mean")
+
+## Export Dahomey results  
+write.csv2(DahD,"Tables/suppl1_Dah.csv")
+```
+## Survival
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+df <- read.table(file = "../data/Mortality2.txt", sep = "\t", header = T)
+df2 <- df[,c(1,2,8,9)]
+df2 <- melt(df2, id.vars=c("Population", "Replicate"))
+colnames(df2) <- c("Population", "Replicate", "Age", "Survival.rate")
+df2 <- df2[which(df2$Age=="Survival.Age.2"),]
+df2 <- df2[which(df2$Population!="Dah 15x18"),]
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+summar <- summarySE(df2, measurevar="Survival.rate", groupvars=c("Population"))
+summar
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+model <- lm(Survival.rate ~ Population, data = df2)
+Anova(model)
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+p1 <- ggplot(df2, aes(x = Population, y = Survival.rate, fill = Population)) +
+  theme_bw(base_size = 15) +
+  geom_boxplot(outlier.colour="black", notch=F, outlier.shape=NA) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x = element_text(color="black"),
+        axis.text.y = element_text(color="black"),
+        panel.grid = element_blank())+
+  theme(legend.title=element_blank(),
+        legend.position = "none",
+        legend.justification = c(0.999, 0.999),
+        legend.background = element_rect(fill="transparent"),
+        legend.key = element_rect(fill="transparent"),
+        legend.text = element_text(size = 12),
+        panel.background = element_rect(fill = "white",
+                                        size = 0.5, linetype = "solid"),
+        strip.background = element_rect(fill = "white")) +
+  ylim(0,1)
+p1
+
+ggsave("Figures/Survival.pdf",plot=p1,device="pdf",width = 10.2, height = 10.2, units = "cm",dpi=1200)
+```
