@@ -37,10 +37,10 @@ dir.create("Tables", showWarnings = FALSE)
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
 # Load data
-raw.data <- read.table("../data/Raw_data.txt", sep="\t", header = T, row.names = 1)
+raw.data <- read.table("../data/count_data.txt", sep="\t", header = T, row.names = 1)
 raw.data<-raw.data[1:(nrow(raw.data)-7),]
 colnames(raw.data) <- sub("_S.*", "", colnames(raw.data))
-metadata <- read.table("../data/AB_Mapping_file.txt", sep="\t", header = T)
+metadata <- read.table("../data/metadata.txt", sep="\t", header = T)
 
 metadata <- metadata[which(metadata$Population!="Dah_outbred"),]
 metadata <- metadata[which(metadata$Age!="A3"),]
@@ -55,7 +55,7 @@ data.dah <- raw.data[ ,(colnames(raw.data) %in% metadata.dah$NGI_reference)]
 data.dah <- data.dah[,apply(data.dah,2,sum)>=2e6] 
 metadata.dah <- metadata.dah[metadata.dah$NGI_reference %in% (colnames(data.dah)),]
 
-ts <- read.table("../data/TS_Male_Female.csv", header = T, sep = "\t")
+ts <- read.table("../data/tissue_specificity.csv", header = T, sep = "\t")
 
 # DESeq model -- LHm
 cds <- DESeqDataSetFromMatrix(data.lhm, metadata.lhm, ~ Sex * Age)
@@ -1607,11 +1607,10 @@ model_LHm<-stan_glmer(Foc_off~Sex*as.factor(Age)+offset(log(Foc_Par))+offset(log
                       data=LHm_dat,
                       seed=100,
                       cores=8,
-                      refresh=0)
-                      #iter=4000,
-                      #prior_intercept = normal(location = 0, scale = 10),
-                      #prior = normal(location = 0, scale = 2.5),
-                      #warmup=1000)
+                      iter=4000,
+                      prior_intercept = normal(location = 0, scale = 10),
+                      prior = normal(location = 0, scale = 2.5),
+                      warmup=1000)
 
 model_posteriors<-as.data.frame(model_LHm)
 mpLHM<-model_posteriors[,1:4]
@@ -1689,11 +1688,10 @@ for (i in 1:number){
                         data=TheRun,
                         seed=100,
                         cores=4,
-                        refresh=0)
-                        #iter=4000,adapt_delta = 0.95,
-                        #prior_intercept = normal(location = 0, scale = 10),
-                        #prior = normal(location = 0, scale = 2.5),
-                        #warmup=1000)
+                        iter=4000,adapt_delta = 0.95,
+                        prior_intercept = normal(location = 0, scale = 10),
+                        prior = normal(location = 0, scale = 2.5),
+                        warmup=1000)
   
   Dah_re<-as.data.frame(rerun_Dah)
   FF<-(Dah_re[,c(1:3,8)])
@@ -1732,7 +1730,7 @@ write.csv2(DahD,"Tables/suppl1_Dah.csv")
 ## Survival
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
-df <- read.table(file = "../data/Mortality2.txt", sep = "\t", header = T)
+df <- read.table(file = "../data/mortality.txt", sep = "\t", header = T)
 df2 <- df[,c(1,2,8,9)]
 df2 <- melt(df2, id.vars=c("Population", "Replicate"))
 colnames(df2) <- c("Population", "Replicate", "Age", "Survival.rate")
