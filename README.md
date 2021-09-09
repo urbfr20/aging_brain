@@ -25,7 +25,7 @@ Then, run the following command from the repository base folder:
 
 Followed by:
 
-`conda activate friberg`
+`conda activate aging_brain`
 
 Then, open rstudio (or similar) from the environment prompt:
 
