@@ -1,6 +1,5 @@
 ---
 title: "Ageing Brain Project"
-#author: "Antonino Malacrinò"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: html_notebook
 code_download: true
@@ -61,7 +60,7 @@ ts <- read.table("../data/tissue_specificity.csv", header = T, sep = "\t")
 cds <- DESeqDataSetFromMatrix(data.lhm, metadata.lhm, ~ Sex * Age)
 cds$group <- factor(paste0(cds$Sex, cds$Age))
 design(cds) <- ~ group
-dds.lhm <-DESeq(cds,betaPrior=FALSE)
+dds.lhm <-DESeq(cds,betaPrior=TRUE)
 countdata <- estimateSizeFactors(cds)
 cdsBlind <- estimateDispersions(countdata)
 vstdata.lhm <- varianceStabilizingTransformation(cdsBlind)
@@ -70,7 +69,7 @@ vstdata.lhm <- varianceStabilizingTransformation(cdsBlind)
 cds <- DESeqDataSetFromMatrix(data.dah, metadata.dah, ~ Sex * Age)
 cds$group <- factor(paste0(cds$Sex, cds$Age))
 design(cds) <- ~ group
-dds.dah <-DESeq(cds,betaPrior=FALSE)
+dds.dah <-DESeq(cds,betaPrior=TRUE)
 countdata <- estimateSizeFactors(cds)
 cdsBlind <- estimateDispersions(countdata)
 vstdata.dah <- varianceStabilizingTransformation(cdsBlind)
@@ -314,13 +313,11 @@ dataset <- data.frame(population = CD.f$Population,
                 SB.o = sb.genes.o$log2FoldChange,
                 CD.f = CD.f$log2FoldChange,
                 CD.m = CD.m$log2FoldChange)
-
-#gdata::keep(dataset, sure = TRUE)
 ```
 
 ## Directional
 ```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
-dataset.1 <- dataset[complete.cases(dataset),] #[dataset$bias.class != "Undefined",]
+dataset.1 <- dataset[complete.cases(dataset),]
 dataset.1 <- dataset.1[,c("population", "gene", "bias.class", "CD.f", "CD.m")]
 colnames(dataset.1) <- c("Population", "Gene", "Bias", "Female", "Male")
 dataset.1 <- dataset.1[complete.cases(dataset.1),]
@@ -346,15 +343,14 @@ plot.graph.lfc <- function(population, yli, ylabyn){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid")) +
-        #strip.background = element_rect(fill = "white")) +
-  scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),#, "Undefined"),
-                    labels=c("FB", "MB", "UB"), #, "NA"
+  scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                    labels=c("FB", "MB", "UB"),
                     values=c("#fb6a4a", "#6baed6", "#cccccc", "#cccccc")) +
-  scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),#, "Undefined"),
-                   labels=c("FB", "MB", "UB")) + #, "NA"
+  scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),
+                   labels=c("FB", "MB", "UB")) +
   geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
   ylim(-yli, yli) +
-  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""}) #+ ggtitle(paste0(population))
+  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""})
 gex.plot.a
 }
 
@@ -391,7 +387,6 @@ plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid")) +
-        #strip.background = element_rect(fill = "white")) +
   scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                     labels=c("FB", "MB", "UB"),
                     values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -399,7 +394,6 @@ plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
                    labels=c("FB", "MB", "UB")) +
   ylim(0, yli) +
   ylab(if(ylabyn == T){"abs log2FC \n (Old - Young)"} else {""}) +
-#  ggtitle(paste0(population)) +
   geom_segment(aes(x = 1, y = y1, xend = 1.9, yend = y1)) +
   geom_segment(aes(x = 2.1, y = y2, xend = 3, yend = y2)) +
   geom_segment(aes(x = 1, y = y3, xend = 3, yend = y3)) +
@@ -433,7 +427,6 @@ dataset.3$CD.m <- ifelse(dataset.3$bias.class == "Female_biased", -dataset.3$CD.
 
 dataset.3 <- dataset.3[,c("population", "gene", "bias.class", "CD.f", "CD.m")]
 colnames(dataset.3) <- c("Population", "Gene", "Bias", "Female", "Male")
-#dataset.3 <- dataset.3[complete.cases(dataset.3),]
 dataset.3 <- reshape2::melt(dataset.3, id.vars = c("Population", "Gene", "Bias"))
 colnames(dataset.3) <- c("Population", "Gene", "Bias", "Sex", "lFC")
 
@@ -456,7 +449,6 @@ plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid")) +
-        #strip.background = element_rect(fill = "white")) +
   scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                     labels=c("FB", "MB", "UB"),
                     values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -465,7 +457,6 @@ plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
   geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
   ylim(-yli, yli) +
   ylab(if(ylabyn == T){"Sexualization \n (Old vs. Young)"} else {""}) +
-  #ggtitle(paste0(population)) +
   geom_segment(aes(x = 1, y = y1, xend = 1.9, yend = y1)) +
   geom_segment(aes(x = 2.1, y = y2, xend = 3, yend = y2)) +
   geom_segment(aes(x = 1, y = y3, xend = 3, yend = y3)) +
@@ -525,7 +516,6 @@ plot.graph.lfc <- function(population, yli, ylabyn){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid")) +
-        #strip.background = element_rect(fill = "white")) +
   scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                     labels=c("FB", "MB", "UB"),
                     values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -533,7 +523,7 @@ plot.graph.lfc <- function(population, yli, ylabyn){
                    labels=c("FB", "MB", "UB")) +
   geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
   ylim(-yli, yli) +
-  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""}) #+ ggtitle(paste0(population))
+  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""})
 gex.plot.a
 }
 
@@ -619,7 +609,6 @@ theme(axis.title.x=element_blank(),
       legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
       legend.text = element_text(size = 12),
       panel.background = element_rect(size = 0.5, linetype = "solid")) + 
-      #strip.background = element_rect(fill = "grey")) +
 scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                   labels=c("FB", "MB", "UB"),
                   values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -647,7 +636,6 @@ theme(axis.title.x=element_blank(),
       legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
       legend.text = element_text(size = 12),
       panel.background = element_rect(size = 0.5, linetype = "solid")) +
-      #strip.background = element_rect(fill = "grey")) +
 scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                   labels=c("FB", "MB", "UB"),
                   values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -842,7 +830,6 @@ b.con.h$Pmcmc <- c(get.p(b.con.samples$Female_FB - b.con.samples$Female_UB),
                get.p(b.con.samples$Female_FB - b.con.samples$Female_MB),
                get.p(b.con.samples$Male_FB - b.con.samples$Female_MB),
                get.p(b.con.samples$Male_MB - b.con.samples$Female_FB))
-#b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob))
 b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
 write.table(b.con.h, "Tables/bayes_absolute_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
 b.con.h
@@ -1031,7 +1018,6 @@ cv.calculator <- function(vstdata){
   names(vstdata) <- gsub("\\..*","", names(vstdata))
   vstdata <- melt(vstdata, id.vars = c("gene", "bias"))
   vstdata <- vstdata[complete.cases(vstdata),]
-  #vstdata <- vstdata[order(variable, gene),]
   vstdata$sex <- NA
   vstdata$sex <- ifelse(grepl("Female_",vstdata$variable),"Female", "Male")
   vstdata$variable <- gsub(".*_","",vstdata$variable)
@@ -1055,14 +1041,13 @@ plot.cv <- function(vstdata, ylimi, population){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid"),
-        #strip.background = element_rect(fill = "grey"),
         axis.text.x = element_text(angle = 90, hjust = 1)) +
     geom_hline(data=data.frame(value= median(subset(vstdata, variable == "A1" & sex == "Female")$value), sex="Female"), aes(yintercept=value),linetype="longdash", color = "red", size=1) +
     geom_hline(data=data.frame(value= median(subset(vstdata, variable == "A1" & sex == "Male")$value), sex="Male"), aes(yintercept=value),linetype="longdash", color = "red", size=1) +
     scale_x_discrete(limits=c("A1", "A2"),
                    labels=c("Young", "Old")) +
     ylab("CV normalized counts") +
-    ylim(0,ylimi) #+ ggtitle(paste0(population))
+    ylim(0,ylimi)
   return(p1)
 }
 
@@ -1109,7 +1094,6 @@ In this graph CD is regressed over abs(SB). Panels are split by bias.class and p
 ```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
 dataset.4 <- dataset
 dataset.4 <- dataset.4[which(dataset.4$bias.class != "Unbiased"),]
-#dataset.4 <- dataset.4[which(dataset.4$bias.class != "Undefined"),]
 dataset.4$CD.f <- ifelse(dataset.4$bias.class == "Male_biased", -dataset.4$CD.f, dataset.4$CD.f)
 dataset.4$CD.m <- ifelse(dataset.4$bias.class == "Female_biased", -dataset.4$CD.m, dataset.4$CD.m)
 
@@ -1127,7 +1111,6 @@ d.4.lhm <- dataset.4[which(dataset.4$Population == "LHm"),]
 gex.plot1 <- ggplot(d.4.lhm, aes(y=CD.lFC, x=abs(SB.lFC), color = Bias))  +
     facet_grid(~ Sex, labeller = labeller(Sex = supp.labs)) +
     theme_bw(base_size = 12) +
-    #ggtitle("LHm") +
     geom_point(size = 1, alpha = 0.5) +
     xlab("Sex-bias (abs log2FC)") +
     ylab("Sexualization \n (Old vs. Young)") +
@@ -1198,7 +1181,7 @@ p
 print.lm <- function(model){
   model.summary <- summary(model)
   model.model <- substr(toString(model.summary$call$subset), 4, 1000)
-  model.predictor <- format(terms(model))#model.summary$call$formula
+  model.predictor <- format(terms(model))
   
   coeff.row <- dim(model.summary$coefficients)[1]
   model.coefficient <- model.summary$coefficients[coeff.row,1]
@@ -1340,13 +1323,11 @@ incline.by.population
 ```{r, warning=FALSE, fig.height = 3, fig.width = 6, message=FALSE, echo=FALSE}
 dataset.6 <- subset(dataset, bias.class != 'Unbiased')
 dataset.6 <- dataset[complete.cases(dataset),]
-#dataset.6 <- subset(dataset.6, bias.class != 'Undefined')
 dataset.6$Female <- ifelse(dataset.6$bias.class == "Female_biased", dataset.6$CD.f, -dataset.6$CD.f)
 dataset.6$Male <- ifelse(dataset.6$bias.class == "Female_biased", dataset.6$CD.m, -dataset.6$CD.m)
 dataset.6$angle <- atan2((dataset.6$Female), (dataset.6$Male))
 dataset.6$angle <- dataset.6$angle * 180/pi
 dataset.6$angle <- ifelse(dataset.6$angle <= 0, dataset.6$angle + 360, dataset.6$angle)
-#dataset.6$angle <- ifelse(dataset.6$angle > 180, dataset.6$angle -180, dataset.6$angle)
 dataset.6$category <- cut((dataset.6$angle), breaks = seq(0, 360, 15), labels = seq(0, 345, 15))
 
 dataset.6.p <- dcast(setDT(dataset.6), population + bias.class ~ category, length)
@@ -1369,7 +1350,6 @@ plot.polar <- function(population, bias, y1, y2, y3){
   theme_minimal(base_size = 14) +
   geom_bar(stat="identity", width=1, position = "dodge", color="black") +
   ggtitle(paste(population, ifelse(bias == "Female_biased", "FB", "MB"))) +
-  #coord_polar(start = 4.58, direction = -1) +
   coord_polar(start = 1.44, direction = -1) +
   theme(axis.text.x = element_blank(),
         axis.text.y = element_blank(),
@@ -1381,7 +1361,6 @@ plot.polar <- function(population, bias, y1, y2, y3){
         legend.background = element_blank(),
         legend.key = element_blank(),
         panel.background = element_rect(size = 0.5, linetype = "solid", color="white"),
-        #strip.background = element_rect(fill = "grey"),
         plot.title = element_text(size = 14, hjust = 0.5)) +
     scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                     labels=c("Female biased", "Male biased", "Unbiased"),
