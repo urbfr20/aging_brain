@@ -1,5 +1,6 @@
 ---
 title: "Ageing Brain Project"
+#author: "Antonino Malacrinò"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: html_notebook
 code_download: true
@@ -36,10 +37,10 @@ dir.create("Tables", showWarnings = FALSE)
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
 # Load data
-raw.data <- read.table("../data/count_data.txt", sep="\t", header = T, row.names = 1)
+raw.data <- read.table("../data/Raw_data.txt", sep="\t", header = T, row.names = 1)
 raw.data<-raw.data[1:(nrow(raw.data)-7),]
 colnames(raw.data) <- sub("_S.*", "", colnames(raw.data))
-metadata <- read.table("../data/metadata.txt", sep="\t", header = T)
+metadata <- read.table("../data/AB_Mapping_file.txt", sep="\t", header = T)
 
 metadata <- metadata[which(metadata$Population!="Dah_outbred"),]
 metadata <- metadata[which(metadata$Age!="A3"),]
@@ -54,13 +55,13 @@ data.dah <- raw.data[ ,(colnames(raw.data) %in% metadata.dah$NGI_reference)]
 data.dah <- data.dah[,apply(data.dah,2,sum)>=2e6] 
 metadata.dah <- metadata.dah[metadata.dah$NGI_reference %in% (colnames(data.dah)),]
 
-ts <- read.table("../data/tissue_specificity.csv", header = T, sep = "\t")
+ts <- read.table("../data/TS_Male_Female.csv", header = T, sep = "\t")
 
 # DESeq model -- LHm
 cds <- DESeqDataSetFromMatrix(data.lhm, metadata.lhm, ~ Sex * Age)
 cds$group <- factor(paste0(cds$Sex, cds$Age))
 design(cds) <- ~ group
-dds.lhm <-DESeq(cds,betaPrior=TRUE)
+dds.lhm <-DESeq(cds,betaPrior=FALSE)
 countdata <- estimateSizeFactors(cds)
 cdsBlind <- estimateDispersions(countdata)
 vstdata.lhm <- varianceStabilizingTransformation(cdsBlind)
@@ -69,7 +70,7 @@ vstdata.lhm <- varianceStabilizingTransformation(cdsBlind)
 cds <- DESeqDataSetFromMatrix(data.dah, metadata.dah, ~ Sex * Age)
 cds$group <- factor(paste0(cds$Sex, cds$Age))
 design(cds) <- ~ group
-dds.dah <-DESeq(cds,betaPrior=TRUE)
+dds.dah <-DESeq(cds,betaPrior=FALSE)
 countdata <- estimateSizeFactors(cds)
 cdsBlind <- estimateDispersions(countdata)
 vstdata.dah <- varianceStabilizingTransformation(cdsBlind)
@@ -313,18 +314,20 @@ dataset <- data.frame(population = CD.f$Population,
                 SB.o = sb.genes.o$log2FoldChange,
                 CD.f = CD.f$log2FoldChange,
                 CD.m = CD.m$log2FoldChange)
+
+#gdata::keep(dataset, sure = TRUE)
 ```
 
 ## Directional
 ```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
-dataset.1 <- dataset[complete.cases(dataset),]
+dataset.1 <- dataset[complete.cases(dataset),] #[dataset$bias.class != "Undefined",]
 dataset.1 <- dataset.1[,c("population", "gene", "bias.class", "CD.f", "CD.m")]
 colnames(dataset.1) <- c("Population", "Gene", "Bias", "Female", "Male")
 dataset.1 <- dataset.1[complete.cases(dataset.1),]
 dataset.1 <- reshape2::melt(dataset.1, id.vars = c("Population", "Gene", "Bias"))
 colnames(dataset.1) <- c("Population", "Gene", "Bias", "Sex", "lFC")
 
-plot.graph.lfc <- function(population, yli, ylabyn){
+plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
   
   # New facet label names for Sex variable
   supp.labs <- c(paste(population, "Female"),  paste(population, "Male"))
@@ -343,19 +346,29 @@ plot.graph.lfc <- function(population, yli, ylabyn){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid")) +
-  scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
-                    labels=c("FB", "MB", "UB"),
+        #strip.background = element_rect(fill = "white")) +
+  scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),#, "Undefined"),
+                    labels=c("FB", "MB", "UB"), #, "NA"
                     values=c("#fb6a4a", "#6baed6", "#cccccc", "#cccccc")) +
-  scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),
-                   labels=c("FB", "MB", "UB")) +
+  scale_x_discrete(limits=c("Female_biased", "Male_biased", "Unbiased"),#, "Undefined"),
+                   labels=c("FB", "MB", "UB")) + #, "NA"
   geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
   ylim(-yli, yli) +
-  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""})
+  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""}) +
+  #+ ggtitle(paste0(population)) +
+  geom_segment(aes(x = 1, y = y1, xend = 1.9, yend = y1)) +
+  geom_segment(aes(x = 2.1, y = y2, xend = 3, yend = y2)) +
+  geom_segment(aes(x = 1, y = y3, xend = 3, yend = y3)) +
+  annotate(geom="text", x=1.5, if(population == "LHm"){y=y1+0.005}else{y=y1+0.1}, label=ifelse(population == "LHm", "", " ")) +
+  annotate(geom="text", x=2.5, if(population == "LHm"){y=y2+0.005}else{y=y2+0.1}, label=ifelse(population == "LHm", " ", " ")) +
+  annotate(geom="text", x=2, if(population == "LHm"){y=y3+0.005}else{y=y3+0.1}, label=ifelse(population == "LHm", " ", " "))
 gex.plot.a
 }
 
-plot.lfc.lhm <- plot.graph.lfc(population = "LHm", yli = 0.15, ylabyn = T)
-plot.lfc.dah <- plot.graph.lfc(population = "Dahomey", yli = 2.5, ylabyn = F)
+plot.lfc.lhm <- plot.graph.lfc(population = "LHm", yli = 0.2, ylabyn = T,
+                               y1 = 0.15, y2 = 0.15, y3 = 0.19)
+plot.lfc.dah <- plot.graph.lfc(population = "Dahomey", yli = 2.8, ylabyn = F,
+                               y1 = 2, y2 = 2, y3 = 2.5)
 
 p.1 <- ggarrange(plot.lfc.lhm, plot.lfc.dah,
                  ncol = 2, nrow = 1,  align = "hv", 
@@ -387,6 +400,7 @@ plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid")) +
+        #strip.background = element_rect(fill = "white")) +
   scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                     labels=c("FB", "MB", "UB"),
                     values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -394,6 +408,7 @@ plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
                    labels=c("FB", "MB", "UB")) +
   ylim(0, yli) +
   ylab(if(ylabyn == T){"abs log2FC \n (Old - Young)"} else {""}) +
+#  ggtitle(paste0(population)) +
   geom_segment(aes(x = 1, y = y1, xend = 1.9, yend = y1)) +
   geom_segment(aes(x = 2.1, y = y2, xend = 3, yend = y2)) +
   geom_segment(aes(x = 1, y = y3, xend = 3, yend = y3)) +
@@ -427,6 +442,7 @@ dataset.3$CD.m <- ifelse(dataset.3$bias.class == "Female_biased", -dataset.3$CD.
 
 dataset.3 <- dataset.3[,c("population", "gene", "bias.class", "CD.f", "CD.m")]
 colnames(dataset.3) <- c("Population", "Gene", "Bias", "Female", "Male")
+#dataset.3 <- dataset.3[complete.cases(dataset.3),]
 dataset.3 <- reshape2::melt(dataset.3, id.vars = c("Population", "Gene", "Bias"))
 colnames(dataset.3) <- c("Population", "Gene", "Bias", "Sex", "lFC")
 
@@ -449,6 +465,7 @@ plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid")) +
+        #strip.background = element_rect(fill = "white")) +
   scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                     labels=c("FB", "MB", "UB"),
                     values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -457,6 +474,7 @@ plot.graph.lfc <- function(population, yli, ylabyn, y1, y2, y3){
   geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
   ylim(-yli, yli) +
   ylab(if(ylabyn == T){"Sexualization \n (Old vs. Young)"} else {""}) +
+  #ggtitle(paste0(population)) +
   geom_segment(aes(x = 1, y = y1, xend = 1.9, yend = y1)) +
   geom_segment(aes(x = 2.1, y = y2, xend = 3, yend = y2)) +
   geom_segment(aes(x = 1, y = y3, xend = 3, yend = y3)) +
@@ -516,6 +534,7 @@ plot.graph.lfc <- function(population, yli, ylabyn){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid")) +
+        #strip.background = element_rect(fill = "white")) +
   scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                     labels=c("FB", "MB", "UB"),
                     values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -523,7 +542,7 @@ plot.graph.lfc <- function(population, yli, ylabyn){
                    labels=c("FB", "MB", "UB")) +
   geom_hline(yintercept = 0, colour="red", alpha = 0.5, size = 0.5, linetype="longdash") +
   ylim(-yli, yli) +
-  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""})
+  ylab(if(ylabyn == T){"log2FC \n (Old - Young)"} else {""}) #+ ggtitle(paste0(population))
 gex.plot.a
 }
 
@@ -609,6 +628,7 @@ theme(axis.title.x=element_blank(),
       legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
       legend.text = element_text(size = 12),
       panel.background = element_rect(size = 0.5, linetype = "solid")) + 
+      #strip.background = element_rect(fill = "grey")) +
 scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                   labels=c("FB", "MB", "UB"),
                   values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -636,6 +656,7 @@ theme(axis.title.x=element_blank(),
       legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
       legend.text = element_text(size = 12),
       panel.background = element_rect(size = 0.5, linetype = "solid")) +
+      #strip.background = element_rect(fill = "grey")) +
 scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                   labels=c("FB", "MB", "UB"),
                   values=c("#fb6a4a", "#6baed6", "#cccccc")) +
@@ -762,7 +783,9 @@ contr.bay <- function(model, type, pvalue){
                                     "Female_FB - Female_UB = 0",
                                     "Female_MB - Female_UB = 0",
                                     "(Male_FB-Male_UB) - (Female_MB-Female_UB) = 0",
-                                    "(Male_MB-Male_UB) - (Female_FB-Female_UB) = 0"),
+                                    "(Male_MB-Male_UB) - (Female_FB-Female_UB) = 0",
+                                    "Male_UB = 0",
+                                    "Female_UB = 0"),
                              alpha = pvalue)
                      } else {hypothesis(b.con, 
                                   c("Female_FB = Female_UB",
@@ -805,7 +828,9 @@ get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
 get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
-get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_UB)))
 
 b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
 write.table(b.con.h, "Tables/bayes_directional_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
@@ -830,6 +855,7 @@ b.con.h$Pmcmc <- c(get.p(b.con.samples$Female_FB - b.con.samples$Female_UB),
                get.p(b.con.samples$Female_FB - b.con.samples$Female_MB),
                get.p(b.con.samples$Male_FB - b.con.samples$Female_MB),
                get.p(b.con.samples$Male_MB - b.con.samples$Female_FB))
+#b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob))
 b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
 write.table(b.con.h, "Tables/bayes_absolute_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
 b.con.h
@@ -853,7 +879,9 @@ get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
 get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
-get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_UB)))
 b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
 write.table(b.con.h, "Tables/bayes_extendedSB_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
 b.con.h
@@ -877,7 +905,9 @@ get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
 get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
-get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_UB)))
 b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
 write.table(b.con.h, "Tables/bayes_TS_lhm.csv", quote = FALSE, sep = ",", row.names = FALSE)
 b.con.h
@@ -919,7 +949,9 @@ get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
 get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
-get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_UB)))
 b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
 write.table(b.con.h, "Tables/bayes_directional_dah.csv", quote = FALSE, sep = ",", row.names = FALSE)
 
@@ -968,7 +1000,9 @@ get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
 get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
-get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_UB)))
 b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
 write.table(b.con.h, "Tables/bayes_extendedSB_dah.csv", quote = FALSE, sep = ",", row.names = FALSE)
 
@@ -978,6 +1012,13 @@ b.con.h
 ### Contrasts Dah directional - TS {.tabset}
 #### P <0.05
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
+intercept <- m.dah.TS$coefficients["(Intercept)"]
+mcmc_areas(m.dah.TS, transformations = list("groupFemaleMale_biased" = function(x) x + intercept,
+                                         "groupFemaleUnbiased" = function(x) x + intercept,
+                                         "groupMaleFemale_biased" = function(x) x + intercept,
+                                         "groupMaleMale_biased" = function(x) x + intercept,
+                                         "groupMaleUnbiased" = function(x) x + intercept))
+
 b.con.h <- contr.bay(model = m.dah.TS,
                      type = "directional",
                      pvalue = 0.05)
@@ -993,7 +1034,9 @@ get.p((b.con.samples$Male_MB - b.con.samples$Male_UB)),
 get.p((b.con.samples$Female_FB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Female_MB - b.con.samples$Female_UB)),
 get.p((b.con.samples$Male_FB - b.con.samples$Male_UB) - (b.con.samples$Female_MB - b.con.samples$Female_UB)),
-get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)))
+get.p((b.con.samples$Male_MB - b.con.samples$Male_UB) - (b.con.samples$Female_FB - b.con.samples$Female_UB)),
+get.p((b.con.samples$Male_UB)),
+get.p((b.con.samples$Female_UB)))
 b.con.h <- subset(b.con.h,select=-c(Evid.Ratio, Post.Prob, Star))
 write.table(b.con.h, "Tables/bayes_TS_dah.csv", quote = FALSE, sep = ",", row.names = FALSE)
 
@@ -1018,6 +1061,7 @@ cv.calculator <- function(vstdata){
   names(vstdata) <- gsub("\\..*","", names(vstdata))
   vstdata <- melt(vstdata, id.vars = c("gene", "bias"))
   vstdata <- vstdata[complete.cases(vstdata),]
+  #vstdata <- vstdata[order(variable, gene),]
   vstdata$sex <- NA
   vstdata$sex <- ifelse(grepl("Female_",vstdata$variable),"Female", "Male")
   vstdata$variable <- gsub(".*_","",vstdata$variable)
@@ -1041,13 +1085,14 @@ plot.cv <- function(vstdata, ylimi, population){
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
         legend.text = element_text(size = 12),
         panel.background = element_rect(size = 0.5, linetype = "solid"),
+        #strip.background = element_rect(fill = "grey"),
         axis.text.x = element_text(angle = 90, hjust = 1)) +
-    geom_hline(data=data.frame(value= median(subset(vstdata, variable == "A1" & sex == "Female")$value), sex="Female"), aes(yintercept=value),linetype="longdash", color = "red", size=1) +
-    geom_hline(data=data.frame(value= median(subset(vstdata, variable == "A1" & sex == "Male")$value), sex="Male"), aes(yintercept=value),linetype="longdash", color = "red", size=1) +
+    geom_hline(data=data.frame(value= median(subset(vstdata, variable == "A1" & sex == "Female")$value), sex="Female"), aes(yintercept=value),linetype="longdash", color = "red", size=0.5) +
+    geom_hline(data=data.frame(value= median(subset(vstdata, variable == "A1" & sex == "Male")$value), sex="Male"), aes(yintercept=value),linetype="longdash", color = "red", size=0.5) +
     scale_x_discrete(limits=c("A1", "A2"),
                    labels=c("Young", "Old")) +
     ylab("CV normalized counts") +
-    ylim(0,ylimi)
+    ylim(0,ylimi) #+ ggtitle(paste0(population))
   return(p1)
 }
 
@@ -1057,11 +1102,89 @@ p1 <- plot.cv(var.lhm, ylimi = 0.02, population = "LHm")
 p2 <- plot.cv(var.dah, ylimi = 0.15, population = "Dahomey")
 
 p <- ggarrange(p1, p2,
-               ncol = 1, nrow = 2,  align = "hv",
+               ncol = 2, nrow = 1,  align = "hv",
                widths = 1, heights = 1,
                common.legend = F)
-save_plot("Figures/Coeff_var.pdf", p, base_width = 5, base_height = 5)
+save_plot("Figures/Coeff_var.pdf", p, base_width = 10, base_height = 3)
 p
+```
+## CV testing
+
+```{r}
+bayes.cv.test.group <- function(dataset){
+  dataset <- dataset[complete.cases(dataset),]
+  dataset$group <- factor(paste0(dataset$sex, dataset$variable))
+  print(head(dataset))
+  m <- stan_glm(value ~ variable + sex, data = dataset, cores = 8, seed = 100, refresh = 0)
+  return(m)
+}
+
+bayes.contrasts.cv.group <- function(m){
+  b.con <- as.data.frame(m)
+  b.con <- b.con[,c(1:5)]
+  colnames(b.con)[1] <- c("Intercept")
+  
+  b.con$FemaleA1 <- b.con$Intercept 
+  b.con$FemaleA2 <-  b.con$Intercept + b.con$groupFemaleA2
+  b.con$MaleA1 <-  b.con$Intercept + b.con$groupMaleA1
+  b.con$MaleA2 <-  b.con$Intercept + b.con$groupMaleA2
+  return(b.con)
+}
+
+contr.cv.bay <- function(model, pvalue){
+  b.con <- bayes.contrasts.cv.group(model)
+  b.con.h <- hypothesis(b.con, 
+                          c("FemaleA2 - FemaleA1 = 0",
+                            "MaleA2 - MaleA1 = 0"),
+                             alpha = pvalue)
+  b.con.h <- as.data.frame(b.con.h$hypothesis)
+  print(b.con.h)
+  #b.con.h <- b.con.h[c(1, 8, 2:7)]
+  return(b.con.h)
+}
+
+get.p <- function(samples){
+  if(mean(samples) > 0){
+    p <- sum(samples <= 0)/length(samples)
+  }else{
+    p <- sum(samples >= 0)/length(samples)
+  }
+  return(max(p*2, (1/4000)*2))
+}
+
+m.var.lhm <- bayes.cv.test.group(var.lhm)
+m.var.dah <- bayes.cv.test.group(var.dah)
+
+intercept <- m.var.lhm$coefficients["(Intercept)"]
+mcmc_areas(m.var.lhm, transformations = list(
+                                         "sexMale" = function(x) x + intercept,
+                                         "variableA2" = function(x) x + intercept), prob=0.9995)
+
+intercept <- m.var.lhm$coefficients["(Intercept)"]
+mcmc_areas(m.var.lhm, transformations = list("groupFemaleA2" = function(x) x + intercept,
+                                         "groupMaleA1" = function(x) x + intercept,
+                                         "groupMaleA2" = function(x) x + intercept), prob=0.9995)
+
+intercept <- m.var.dah$coefficients["(Intercept)"]
+mcmc_areas(m.var.dah, transformations = list("groupFemaleA2" = function(x) x + intercept,
+                                         "groupMaleA1" = function(x) x + intercept,
+                                         "groupMaleA2" = function(x) x + intercept))
+
+b.con.samples.lhm <- bayes.contrasts.cv.group(m.var.lhm)
+b.con.samples.dah <- bayes.contrasts.cv.group(m.var.dah)
+
+b.con.h.lhm <- contr.cv.bay(model = m.var.lhm,
+                     pvalue = 0.0005)
+b.con.h.dah <- contr.cv.bay(model = m.var.dah,
+                     pvalue = 0.0005)
+
+as.data.frame(hypothesis(b.con.samples.lhm, c("FemaleA2 - FemaleA1 = 0", "MaleA2 - MaleA1 = 0"), alpha = 0.0005)$hypothesis)
+
+b.con.h.lhm$Pmcmc <- c(get.p(b.con.samples.lhm$FemaleA2 - b.con.samples.lhm$FemaleA1),
+                   get.p((b.con.samples.lhm$MaleA2 - b.con.samples.lhm$MaleA1)))
+b.con.h.dah$Pmcmc <- c(get.p(b.con.samples.dah$FemaleA2 - b.con.samples.dah$FemaleA1),
+                       get.p((b.con.samples.dah$MaleA2 - b.con.samples.dah$MaleA1)))
+
 ```
 
 ### Test {.tabset}
@@ -1094,8 +1217,9 @@ In this graph CD is regressed over abs(SB). Panels are split by bias.class and p
 ```{r, warning=FALSE, fig.height = 2, fig.width = 6, message=FALSE, echo=FALSE}
 dataset.4 <- dataset
 dataset.4 <- dataset.4[which(dataset.4$bias.class != "Unbiased"),]
-dataset.4$CD.f <- ifelse(dataset.4$bias.class == "Male_biased", -dataset.4$CD.f, dataset.4$CD.f)
-dataset.4$CD.m <- ifelse(dataset.4$bias.class == "Female_biased", -dataset.4$CD.m, dataset.4$CD.m)
+#dataset.4 <- dataset.4[which(dataset.4$bias.class != "Undefined"),]
+#dataset.4$CD.f <- ifelse(dataset.4$bias.class == "Male_biased", -dataset.4$CD.f, dataset.4$CD.f)
+#dataset.4$CD.m <- ifelse(dataset.4$bias.class == "Female_biased", -dataset.4$CD.m, dataset.4$CD.m)
 
 dataset.4 <- dataset.4[complete.cases(dataset.4),]
 dataset.4 <- dataset.4[,c("population", "gene", "bias.class", "SB.y", "CD.f", "CD.m")]
@@ -1111,9 +1235,10 @@ d.4.lhm <- dataset.4[which(dataset.4$Population == "LHm"),]
 gex.plot1 <- ggplot(d.4.lhm, aes(y=CD.lFC, x=abs(SB.lFC), color = Bias))  +
     facet_grid(~ Sex, labeller = labeller(Sex = supp.labs)) +
     theme_bw(base_size = 12) +
+    #ggtitle("LHm") +
     geom_point(size = 1, alpha = 0.5) +
     xlab("Sex-bias (abs log2FC)") +
-    ylab("Sexualization \n (Old vs. Young)") +
+    ylab("log2FC (Old vs. Young)") +
     theme(legend.position="none",
         legend.background = element_rect(color = "black", size = 0.3, linetype = "solid"),
           legend.text = element_text(size = 12),
@@ -1181,7 +1306,7 @@ p
 print.lm <- function(model){
   model.summary <- summary(model)
   model.model <- substr(toString(model.summary$call$subset), 4, 1000)
-  model.predictor <- format(terms(model))
+  model.predictor <- format(terms(model))#model.summary$call$formula
   
   coeff.row <- dim(model.summary$coefficients)[1]
   model.coefficient <- model.summary$coefficients[coeff.row,1]
@@ -1323,11 +1448,13 @@ incline.by.population
 ```{r, warning=FALSE, fig.height = 3, fig.width = 6, message=FALSE, echo=FALSE}
 dataset.6 <- subset(dataset, bias.class != 'Unbiased')
 dataset.6 <- dataset[complete.cases(dataset),]
+#dataset.6 <- subset(dataset.6, bias.class != 'Undefined')
 dataset.6$Female <- ifelse(dataset.6$bias.class == "Female_biased", dataset.6$CD.f, -dataset.6$CD.f)
 dataset.6$Male <- ifelse(dataset.6$bias.class == "Female_biased", dataset.6$CD.m, -dataset.6$CD.m)
 dataset.6$angle <- atan2((dataset.6$Female), (dataset.6$Male))
 dataset.6$angle <- dataset.6$angle * 180/pi
 dataset.6$angle <- ifelse(dataset.6$angle <= 0, dataset.6$angle + 360, dataset.6$angle)
+#dataset.6$angle <- ifelse(dataset.6$angle > 180, dataset.6$angle -180, dataset.6$angle)
 dataset.6$category <- cut((dataset.6$angle), breaks = seq(0, 360, 15), labels = seq(0, 345, 15))
 
 dataset.6.p <- dcast(setDT(dataset.6), population + bias.class ~ category, length)
@@ -1350,6 +1477,7 @@ plot.polar <- function(population, bias, y1, y2, y3){
   theme_minimal(base_size = 14) +
   geom_bar(stat="identity", width=1, position = "dodge", color="black") +
   ggtitle(paste(population, ifelse(bias == "Female_biased", "FB", "MB"))) +
+  #coord_polar(start = 4.58, direction = -1) +
   coord_polar(start = 1.44, direction = -1) +
   theme(axis.text.x = element_blank(),
         axis.text.y = element_blank(),
@@ -1361,6 +1489,7 @@ plot.polar <- function(population, bias, y1, y2, y3){
         legend.background = element_blank(),
         legend.key = element_blank(),
         panel.background = element_rect(size = 0.5, linetype = "solid", color="white"),
+        #strip.background = element_rect(fill = "grey"),
         plot.title = element_text(size = 14, hjust = 0.5)) +
     scale_fill_manual(limits=c("Female_biased", "Male_biased", "Unbiased"),
                     labels=c("Female biased", "Male biased", "Unbiased"),
@@ -1584,9 +1713,7 @@ ggsave("Figures/Suppl1_Fig_AB.pdf",plot=AB_boxplots,device="pdf",width = 16.8, h
 # Modelling the LHm population
 model_LHm<-stan_glmer(Foc_off~Sex*as.factor(Age)+offset(log(Foc_Par))+offset(log(Comp_off/Comp_Par)) + (1|ID), family =poisson, 
                       data=LHm_dat,
-                      seed=100,
-                      cores=8,
-                      iter=4000,
+                      seed=100,cores=4,iter=4000,
                       prior_intercept = normal(location = 0, scale = 10),
                       prior = normal(location = 0, scale = 2.5),
                       warmup=1000)
@@ -1665,9 +1792,7 @@ for (i in 1:number){
   
   rerun_Dah<-stan_glm(Foc_off~Sex*as.factor(Age)+offset(log(Foc_Par))+offset(log(Comp_off/Comp_Par)) + Cage, family =poisson, 
                         data=TheRun,
-                        seed=100,
-                        cores=4,
-                        iter=4000,adapt_delta = 0.95,
+                        seed=100,cores=4,iter=4000,adapt_delta = 0.95,
                         prior_intercept = normal(location = 0, scale = 10),
                         prior = normal(location = 0, scale = 2.5),
                         warmup=1000)
@@ -1679,6 +1804,8 @@ for (i in 1:number){
   outSexMale[,i]<-FF$SexMale
   outAge[,i]<-FF$`as.factor(Age)25`
   outSexMaleAge[,i]<-FF$`SexMale:as.factor(Age)25`
+  
+  print(i)
   
 }
 
@@ -1709,7 +1836,7 @@ write.csv2(DahD,"Tables/suppl1_Dah.csv")
 ## Survival
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
-df <- read.table(file = "../data/mortality.txt", sep = "\t", header = T)
+df <- read.table(file = "../data/Mortality2.txt", sep = "\t", header = T)
 df2 <- df[,c(1,2,8,9)]
 df2 <- melt(df2, id.vars=c("Population", "Replicate"))
 colnames(df2) <- c("Population", "Replicate", "Age", "Survival.rate")
