@@ -1,0 +1,1 @@
+# Program:featureCounts v2.0.1; Command:"featureCounts" "-B" "-C" "-g" "gene_biotype" "-t" "exon" "-p" "-T" "6" "-a" "genes.gtf" "-s" "1" "-o" "P20702_385_R1.featureCounts.txt" "P20702_385_R1.markdup.sorted.bam" 
