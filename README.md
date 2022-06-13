@@ -6,6 +6,7 @@ This is the public repository for "Aging desexualizes the Drosophila brain trans
 
 * The Rmd/html notebook with the code is under `code/`.
 * Raw data, along with Tissue Specificity data and other metadata, is under `data/`
+* Reproducibility information for data preprocessing (softwares versions, parameters and logs) is under `data/preprocessing`
 
 ## Clone this repository
 
